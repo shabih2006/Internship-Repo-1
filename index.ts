@@ -10,3 +10,4 @@ function greetUser(user: User): string {
 }
 const sampleUser: User = { id: 1, name: "Shabih" };
 console.log(greetUser(sampleUser));
+//task5
