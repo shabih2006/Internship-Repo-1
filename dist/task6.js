@@ -1,3 +1,4 @@
+"use strict";
 function fetchStudentFromAPI(id) {
     return new Promise((resolve, reject) => {
         console.log(`Fetching student with ID: ${id} from API...`);
@@ -12,7 +13,7 @@ function fetchStudentFromAPI(id) {
     });
 }
 async function runAsyncDemo() {
-    console.log("***Starting Async Test***");
+    console.log("*** Starting Async Test ***");
     try {
         const student = await fetchStudentFromAPI(1);
         console.log("Success! Received Data:", student);
