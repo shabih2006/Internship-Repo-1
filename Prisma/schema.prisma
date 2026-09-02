@@ -1,0 +1,52 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Student {
+  StudentID   Int          @id
+  StudentName String
+  PhoneNo     String?
+  DOB         String?
+  Email       String?
+  Enrollment  Enrollment[]
+}
+
+model Teacher {
+  TeacherID   Int       @id
+  TeacherName String
+  Email       String?
+  PhoneNo     String?
+  Courses     Courses[]
+}
+
+model Courses {
+  CourseID    Int          @id
+  CourseNmae  String
+  CreditHours Int?
+  TeacherID   Int?
+  Teacher     Teacher?     @relation(fields: [TeacherID], references: [TeacherID])
+  Enrollment  Enrollment[]
+}
+
+model Enrollment {
+  EnrollmentID   Int       @id
+  StudentID      Int
+  CourseID       Int
+  EnrollmentDate String?
+  Student        Student   @relation(fields: [StudentID], references: [StudentID])
+  Courses        Courses   @relation(fields: [CourseID], references: [CourseID])
+  Results        Results[]
+}
+
+model Results {
+  ResultID     Int        @id
+  EnrollmentID Int
+  Grade        String?
+  GPA          Float?
+  Enrollment   Enrollment @relation(fields: [EnrollmentID], references: [EnrollmentID])
+}

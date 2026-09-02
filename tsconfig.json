@@ -1,16 +1,16 @@
 {
-"compilerOptions": {
-"target": "es2017",
-"module": "esnext",
-"moduleResolution": "bundler",
-"types": ["node"],
-"outDir": "./dist",
-"rootDir": "./",
-"strict": true,
-"esModuleInterop": true,
-"skipLibCheck": true,
-"forceConsistentCasingInFileNames": true
-},
-"include": ["*.ts"],
-"exclude": ["node_modules", "dist"]
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "CommonJS",
+    "moduleResolution": "node",
+    "types": ["node"],
+    "outDir": "./dist",
+    "rootDir": "./",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": ["**/*.ts"],
+  "exclude": ["node_modules", "dist"]
 }

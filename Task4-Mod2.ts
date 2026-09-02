@@ -1,4 +1,6 @@
+export {}; // <--- Add this at line 1
 type Status = "Active" | "Inactive";
+
 
 interface StudentModel {
   id: number;

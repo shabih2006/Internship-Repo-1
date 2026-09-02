@@ -1,4 +1,3 @@
-"use strict";
 console.log("Hello! This is TypeScript!");
 function greetUser(user) {
     return 'Hello, ' + user.name + '!';
@@ -17,3 +16,4 @@ const testStudent = new Student(1, "Shabih", 20);
 const testStudent2 = new Student(2, "Hassan", 20);
 console.log(testStudent);
 console.log(testStudent2);
+export {};

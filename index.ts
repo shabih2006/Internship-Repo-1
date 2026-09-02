@@ -1,3 +1,6 @@
+export {}; // <--- Add this at line 1
+
+
 console.log("Hello! This is TypeScript!");
 
 interface User {
