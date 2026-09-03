@@ -1,34 +1,64 @@
 import express from 'express';
-import type { Request, Response } from 'express';
+import type { Request, Response, NextFunction } from 'express';
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
 
 const app = express();
 const prisma = new PrismaClient();
+const JWT_SECRET = process.env.JWT_SECRET || 'super_secret_jwt_key_123';
 
 app.use(express.json());
 
 // ========================================================
-// 1. AUTH / USER ENDPOINTS (FULL CRUD)
+// AUTHENTICATION MIDDLEWARE
+// ========================================================
+interface AuthenticatedRequest extends Request {
+  user?: any;
+}
+
+const authenticateToken = (req: AuthenticatedRequest, res: Response, next: NextFunction): void => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+
+  if (!token) {
+    res.status(401).json({ error: 'Access denied. No token provided.' });
+    return;
+  }
+
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) {
+      res.status(403).json({ error: 'Invalid or expired token.' });
+      return;
+    }
+    req.user = user;
+    next();
+  });
+};
+
+// ========================================================
+// 1. AUTH / USER ENDPOINTS
 // ========================================================
 
-// REGISTER
-app.post('/auth/register', async (req: Request, res: Response) => {
+app.post('/auth/register', async (req: Request, res: Response): Promise<void> => {
   try {
     const { email, password, role } = req.body;
 
     if (!email || !password) {
-      return res.status(400).json({ error: 'Email and password are required.' });
+      res.status(400).json({ error: 'Email and password are required.' });
+      return;
     }
 
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(email)) {
-      return res.status(400).json({ error: 'Please enter a valid email address.' });
+      res.status(400).json({ error: 'Please enter a valid email address.' });
+      return;
     }
 
     const existingUser = await prisma.user.findUnique({ where: { Email: email } });
     if (existingUser) {
-      return res.status(400).json({ error: 'User with this email already exists.' });
+      res.status(400).json({ error: 'User with this email already exists.' });
+      return;
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
@@ -50,27 +80,36 @@ app.post('/auth/register', async (req: Request, res: Response) => {
   }
 });
 
-// LOGIN
-app.post('/auth/login', async (req: Request, res: Response) => {
+app.post('/auth/login', async (req: Request, res: Response): Promise<void> => {
   try {
     const { email, password } = req.body;
 
     if (!email || !password) {
-      return res.status(400).json({ error: 'Email and password are required.' });
+      res.status(400).json({ error: 'Email and password are required.' });
+      return;
     }
 
     const user = await prisma.user.findUnique({ where: { Email: email } });
     if (!user) {
-      return res.status(401).json({ error: 'Invalid credentials: User not found.' });
+      res.status(401).json({ error: 'Invalid credentials: User not found.' });
+      return;
     }
 
     const isPasswordValid = await bcrypt.compare(password, user.Password);
     if (!isPasswordValid) {
-      return res.status(401).json({ error: 'Invalid credentials: Incorrect password.' });
+      res.status(401).json({ error: 'Invalid credentials: Incorrect password.' });
+      return;
     }
+
+    const token = jwt.sign(
+      { userId: user.UserID, email: user.Email, role: user.Role },
+      JWT_SECRET,
+      { expiresIn: '1h' }
+    );
 
     res.status(200).json({
       message: 'Login successful!',
+      token,
       user: { id: user.UserID, email: user.Email, role: user.Role },
     });
   } catch (error) {
@@ -78,8 +117,7 @@ app.post('/auth/login', async (req: Request, res: Response) => {
   }
 });
 
-// GET ALL USERS
-app.get('/auth/users', async (req: Request, res: Response) => {
+app.get('/auth/users', async (req: Request, res: Response): Promise<void> => {
   try {
     const users = await prisma.user.findMany();
     res.json(users);
@@ -88,19 +126,20 @@ app.get('/auth/users', async (req: Request, res: Response) => {
   }
 });
 
-// GET USER BY ID
-app.get('/auth/users/:id', async (req: Request, res: Response) => {
+app.get('/auth/users/:id', async (req: Request, res: Response): Promise<void> => {
   try {
     const user = await prisma.user.findUnique({ where: { UserID: Number(req.params.id) } });
-    if (!user) return res.status(404).json({ error: 'User not found.' });
+    if (!user) {
+      res.status(404).json({ error: 'User not found.' });
+      return;
+    }
     res.json(user);
   } catch (error) {
     res.status(500).json({ error: 'Error fetching user.' });
   }
 });
 
-// PATCH USER (AUTO-HASHES PASSWORD IF PROVIDED)
-app.patch('/auth/users/:id', async (req: Request, res: Response) => {
+app.patch('/auth/users/:id', async (req: Request, res: Response): Promise<void> => {
   try {
     const userId = Number(req.params.id);
     const { password, email, role } = req.body;
@@ -118,7 +157,8 @@ app.patch('/auth/users/:id', async (req: Request, res: Response) => {
     }
 
     if (Object.keys(updateData).length === 0) {
-      return res.status(400).json({ error: 'No valid fields provided for update.' });
+      res.status(400).json({ error: 'No valid fields provided for update.' });
+      return;
     }
 
     const updated = await prisma.user.update({
@@ -128,13 +168,11 @@ app.patch('/auth/users/:id', async (req: Request, res: Response) => {
 
     res.json({ message: 'User updated successfully!', user: updated });
   } catch (error: any) {
-    console.error('PATCH USER ERROR:', error);
     res.status(500).json({ error: error.message || 'Error updating user.' });
   }
 });
 
-// DELETE USER
-app.delete('/auth/users/:id', async (req: Request, res: Response) => {
+app.delete('/auth/users/:id', async (req: Request, res: Response): Promise<void> => {
   try {
     await prisma.user.delete({ where: { UserID: Number(req.params.id) } });
     res.json({ message: 'User deleted successfully.' });
@@ -143,11 +181,10 @@ app.delete('/auth/users/:id', async (req: Request, res: Response) => {
   }
 });
 
-
 // ========================================================
-// 2. STUDENT ENDPOINTS (FULL CRUD)
+// 2. STUDENT ENDPOINTS
 // ========================================================
-app.get('/students', async (req: Request, res: Response) => {
+app.get('/students', authenticateToken, async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     const students = await prisma.student.findMany();
     res.json(students);
@@ -156,17 +193,20 @@ app.get('/students', async (req: Request, res: Response) => {
   }
 });
 
-app.get('/students/:id', async (req: Request, res: Response) => {
+app.get('/students/:id', authenticateToken, async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     const student = await prisma.student.findUnique({ where: { StudentID: Number(req.params.id) } });
-    if (!student) return res.status(404).json({ error: 'Student not found.' });
+    if (!student) {
+      res.status(404).json({ error: 'Student not found.' });
+      return;
+    }
     res.json(student);
   } catch (error) {
     res.status(500).json({ error: 'Error fetching student.' });
   }
 });
 
-app.post('/students', async (req: Request, res: Response) => {
+app.post('/students', authenticateToken, async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     const { StudentID, StudentName, PhoneNo, DOB, Email } = req.body;
     const newStudent = await prisma.student.create({
@@ -178,7 +218,7 @@ app.post('/students', async (req: Request, res: Response) => {
   }
 });
 
-app.patch('/students/:id', async (req: Request, res: Response) => {
+app.patch('/students/:id', authenticateToken, async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     const updated = await prisma.student.update({
       where: { StudentID: Number(req.params.id) },
@@ -190,7 +230,7 @@ app.patch('/students/:id', async (req: Request, res: Response) => {
   }
 });
 
-app.delete('/students/:id', async (req: Request, res: Response) => {
+app.delete('/students/:id', authenticateToken, async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     await prisma.student.delete({ where: { StudentID: Number(req.params.id) } });
     res.json({ message: 'Student deleted successfully.' });
@@ -199,11 +239,10 @@ app.delete('/students/:id', async (req: Request, res: Response) => {
   }
 });
 
-
 // ========================================================
-// 3. TEACHER ENDPOINTS (FULL CRUD)
+// 3. TEACHER ENDPOINTS
 // ========================================================
-app.get('/teachers', async (req: Request, res: Response) => {
+app.get('/teachers', async (req: Request, res: Response): Promise<void> => {
   try {
     const teachers = await prisma.teacher.findMany();
     res.json(teachers);
@@ -212,17 +251,20 @@ app.get('/teachers', async (req: Request, res: Response) => {
   }
 });
 
-app.get('/teachers/:id', async (req: Request, res: Response) => {
+app.get('/teachers/:id', async (req: Request, res: Response): Promise<void> => {
   try {
     const teacher = await prisma.teacher.findUnique({ where: { TeacherID: Number(req.params.id) } });
-    if (!teacher) return res.status(404).json({ error: 'Teacher not found.' });
+    if (!teacher) {
+      res.status(404).json({ error: 'Teacher not found.' });
+      return;
+    }
     res.json(teacher);
   } catch (error) {
     res.status(500).json({ error: 'Error fetching teacher.' });
   }
 });
 
-app.post('/teachers', async (req: Request, res: Response) => {
+app.post('/teachers', async (req: Request, res: Response): Promise<void> => {
   try {
     const { TeacherID, TeacherName, Email, PhoneNo } = req.body;
     const newTeacher = await prisma.teacher.create({
@@ -234,7 +276,7 @@ app.post('/teachers', async (req: Request, res: Response) => {
   }
 });
 
-app.patch('/teachers/:id', async (req: Request, res: Response) => {
+app.patch('/teachers/:id', async (req: Request, res: Response): Promise<void> => {
   try {
     const updated = await prisma.teacher.update({
       where: { TeacherID: Number(req.params.id) },
@@ -246,7 +288,7 @@ app.patch('/teachers/:id', async (req: Request, res: Response) => {
   }
 });
 
-app.delete('/teachers/:id', async (req: Request, res: Response) => {
+app.delete('/teachers/:id', async (req: Request, res: Response): Promise<void> => {
   try {
     await prisma.teacher.delete({ where: { TeacherID: Number(req.params.id) } });
     res.json({ message: 'Teacher deleted successfully.' });
@@ -255,11 +297,10 @@ app.delete('/teachers/:id', async (req: Request, res: Response) => {
   }
 });
 
-
 // ========================================================
-// 4. COURSES ENDPOINTS (FULL CRUD)
+// 4. COURSES ENDPOINTS
 // ========================================================
-app.get('/courses', async (req: Request, res: Response) => {
+app.get('/courses', async (req: Request, res: Response): Promise<void> => {
   try {
     const courses = await prisma.courses.findMany();
     res.json(courses);
@@ -268,21 +309,28 @@ app.get('/courses', async (req: Request, res: Response) => {
   }
 });
 
-app.get('/courses/:id', async (req: Request, res: Response) => {
+app.get('/courses/:id', async (req: Request, res: Response): Promise<void> => {
   try {
     const course = await prisma.courses.findUnique({ where: { CourseID: Number(req.params.id) } });
-    if (!course) return res.status(404).json({ error: 'Course not found.' });
+    if (!course) {
+      res.status(404).json({ error: 'Course not found.' });
+      return;
+    }
     res.json(course);
   } catch (error) {
     res.status(500).json({ error: 'Error fetching course.' });
   }
 });
 
-app.post('/courses', async (req: Request, res: Response) => {
+app.post('/courses', async (req: Request, res: Response): Promise<void> => {
   try {
     const { CourseID, CourseName, CourseCode } = req.body;
     const newCourse = await prisma.courses.create({
-      data: { CourseID: Number(CourseID), CourseName, CourseCode },
+      data: {
+        CourseID: Number(CourseID),
+        CourseName: String(CourseName),
+        CourseCode: String(CourseCode),
+      } as any,
     });
     res.status(201).json(newCourse);
   } catch (error) {
@@ -290,7 +338,7 @@ app.post('/courses', async (req: Request, res: Response) => {
   }
 });
 
-app.patch('/courses/:id', async (req: Request, res: Response) => {
+app.patch('/courses/:id', async (req: Request, res: Response): Promise<void> => {
   try {
     const updated = await prisma.courses.update({
       where: { CourseID: Number(req.params.id) },
@@ -302,7 +350,7 @@ app.patch('/courses/:id', async (req: Request, res: Response) => {
   }
 });
 
-app.delete('/courses/:id', async (req: Request, res: Response) => {
+app.delete('/courses/:id', async (req: Request, res: Response): Promise<void> => {
   try {
     await prisma.courses.delete({ where: { CourseID: Number(req.params.id) } });
     res.json({ message: 'Course deleted successfully.' });
@@ -311,11 +359,10 @@ app.delete('/courses/:id', async (req: Request, res: Response) => {
   }
 });
 
-
 // ========================================================
-// 5. ENROLLMENT ENDPOINTS (FULL CRUD)
+// 5. ENROLLMENT ENDPOINTS
 // ========================================================
-app.get('/enrollments', async (req: Request, res: Response) => {
+app.get('/enrollments', async (req: Request, res: Response): Promise<void> => {
   try {
     const enrollments = await prisma.enrollment.findMany();
     res.json(enrollments);
@@ -324,22 +371,26 @@ app.get('/enrollments', async (req: Request, res: Response) => {
   }
 });
 
-app.post('/enrollments', async (req: Request, res: Response) => {
+app.post('/enrollments', async (req: Request, res: Response): Promise<void> => {
   try {
     const { StudentID, CourseID } = req.body;
+    if (!StudentID || !CourseID) {
+      res.status(400).json({ error: 'StudentID and CourseID are required.' });
+      return;
+    }
     const newEnrollment = await prisma.enrollment.create({
       data: {
         StudentID: Number(StudentID),
         CourseID: Number(CourseID),
-      },
+      } as any,
     });
     res.status(201).json(newEnrollment);
-  } catch (error) {
-    res.status(500).json({ error: 'Error creating enrollment.' });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Error creating enrollment.' });
   }
 });
 
-app.patch('/enrollments/:id', async (req: Request, res: Response) => {
+app.patch('/enrollments/:id', async (req: Request, res: Response): Promise<void> => {
   try {
     const updated = await prisma.enrollment.update({
       where: { EnrollmentID: Number(req.params.id) },
@@ -351,7 +402,7 @@ app.patch('/enrollments/:id', async (req: Request, res: Response) => {
   }
 });
 
-app.delete('/enrollments/:id', async (req: Request, res: Response) => {
+app.delete('/enrollments/:id', async (req: Request, res: Response): Promise<void> => {
   try {
     await prisma.enrollment.delete({ where: { EnrollmentID: Number(req.params.id) } });
     res.json({ message: 'Enrollment deleted successfully.' });
@@ -360,11 +411,10 @@ app.delete('/enrollments/:id', async (req: Request, res: Response) => {
   }
 });
 
-
 // ========================================================
-// 6. RESULTS ENDPOINTS (FULL CRUD)
+// 6. RESULTS ENDPOINTS
 // ========================================================
-app.get('/results', async (req: Request, res: Response) => {
+app.get('/results', async (req: Request, res: Response): Promise<void> => {
   try {
     const results = await prisma.results.findMany();
     res.json(results);
@@ -373,23 +423,31 @@ app.get('/results', async (req: Request, res: Response) => {
   }
 });
 
-app.post('/results', async (req: Request, res: Response) => {
+app.post('/results', async (req: Request, res: Response): Promise<void> => {
   try {
     const { EnrollmentID, Marks, Grade } = req.body;
+
+    if (!EnrollmentID || Marks === undefined || !Grade) {
+      res.status(400).json({ error: 'EnrollmentID, Marks, and Grade are required.' });
+      return;
+    }
+
     const newResult = await prisma.results.create({
       data: {
         EnrollmentID: Number(EnrollmentID),
         Marks: Number(Marks),
-        Grade,
-      },
+        Grade: String(Grade),
+      } as any,
     });
+
     res.status(201).json(newResult);
-  } catch (error) {
-    res.status(500).json({ error: 'Error creating result record.' });
+  } catch (error: any) {
+    console.error('CREATE RESULT ERROR:', error);
+    res.status(500).json({ error: error.message || 'Error creating result record.' });
   }
 });
 
-app.patch('/results/:id', async (req: Request, res: Response) => {
+app.patch('/results/:id', async (req: Request, res: Response): Promise<void> => {
   try {
     const updated = await prisma.results.update({
       where: { ResultID: Number(req.params.id) },
@@ -401,7 +459,7 @@ app.patch('/results/:id', async (req: Request, res: Response) => {
   }
 });
 
-app.delete('/results/:id', async (req: Request, res: Response) => {
+app.delete('/results/:id', async (req: Request, res: Response): Promise<void> => {
   try {
     await prisma.results.delete({ where: { ResultID: Number(req.params.id) } });
     res.json({ message: 'Result record deleted successfully.' });
@@ -410,10 +468,7 @@ app.delete('/results/:id', async (req: Request, res: Response) => {
   }
 });
 
-
-// ========================================================
-// SERVER SETUP & 404 HANDLER
-// ========================================================
+// 404 HANDLER
 app.use((req: Request, res: Response) => {
   res.status(404).json({ error: `Route ${req.originalUrl} not found.` });
 });
