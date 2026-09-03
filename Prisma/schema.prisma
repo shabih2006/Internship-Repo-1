@@ -3,8 +3,15 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
+}
+
+model User {
+  UserID   Int    @id @default(autoincrement())
+  Email    String @unique
+  Password String
+  Role     String @default("USER")
 }
 
 model Student {
@@ -27,9 +34,9 @@ model Teacher {
 model Courses {
   CourseID    Int          @id
   CourseNmae  String
-  CreditHours Int?
-  TeacherID   Int?
-  Teacher     Teacher?     @relation(fields: [TeacherID], references: [TeacherID])
+  CreditHours Int
+  TeacherID   Int
+  Teacher     Teacher      @relation(fields: [TeacherID], references: [TeacherID])
   Enrollment  Enrollment[]
 }
 
@@ -39,7 +46,7 @@ model Enrollment {
   CourseID       Int
   EnrollmentDate String?
   Student        Student   @relation(fields: [StudentID], references: [StudentID])
-  Courses        Courses   @relation(fields: [CourseID], references: [CourseID])
+  Course         Courses   @relation(fields: [CourseID], references: [CourseID])
   Results        Results[]
 }
 

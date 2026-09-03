@@ -1,389 +1,424 @@
-export {};
 import express from 'express';
-import type { Request, Response, NextFunction } from 'express';
-import { z, ZodError } from 'zod';
+import type { Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
+import bcrypt from 'bcryptjs';
 
-const prisma = new PrismaClient();
 const app = express();
-const PORT = 3000;
+const prisma = new PrismaClient();
 
 app.use(express.json());
 
-// Helper function to safely locate Prisma models dynamically
-const getModel = (modelName: string) => {
-  const p = prisma as any;
-  const target = modelName.toLowerCase();
-  
-  const keys = Object.keys(p);
-  const foundKey = keys.find((k) => k.toLowerCase() === target);
+// ========================================================
+// 1. AUTH / USER ENDPOINTS (FULL CRUD)
+// ========================================================
 
-  return foundKey ? p[foundKey] : null;
-};
-
-// Terminal Request Logger Middleware
-app.use((req: Request, res: Response, next: NextFunction) => {
-  const time = new Date().toLocaleTimeString();
-  console.log(`\n--------------------------------------------------`);
-  console.log(`[${time}] INCOMING: ${req.method} ${req.originalUrl}`);
-  if (Object.keys(req.body).length > 0) {
-    console.log(`Body:`, JSON.stringify(req.body));
-  }
-  next();
-});
-
-// ==========================================
-// ZOD VALIDATION SCHEMAS
-// ==========================================
-
-const studentSchema = z.object({
-  StudentID: z.number({ message: 'StudentID must be a number' }).int().positive(),
-  StudentName: z.string({ message: 'StudentName must be a string' }).trim().min(1, 'StudentName cannot be empty'),
-  PhoneNo: z.string().optional(),
-  DOB: z.string().optional(),
-  Email: z.string().email('Invalid email address format').optional()
-});
-
-const teacherSchema = z.object({
-  TeacherID: z.number({ message: 'TeacherID must be a number' }).int().positive(),
-  TeacherName: z.string({ message: 'TeacherName must be a string' }).trim().min(1, 'TeacherName cannot be empty'),
-  Email: z.string().email('Invalid email address format').optional(),
-  PhoneNo: z.string().optional()
-});
-
-const courseSchema = z.object({
-  CourseID: z.number({ message: 'CourseID must be a number' }).int().positive(),
-  CourseNmae: z.string({ message: 'CourseNmae must be a string' }).trim().min(1, 'CourseNmae cannot be empty'),
-  CreditHours: z.number().int().positive().optional(),
-  TeacherID: z.number().int().positive().optional()
-});
-
-const enrollmentSchema = z.object({
-  EnrollmentID: z.number({ message: 'EnrollmentID must be a number' }).int().positive(),
-  StudentID: z.number({ message: 'StudentID must be a number' }).int().positive(),
-  CourseID: z.number({ message: 'CourseID must be a number' }).int().positive(),
-  EnrollmentDate: z.string().optional()
-});
-
-const resultSchema = z.object({
-  ResultID: z.number({ message: 'ResultID must be a number' }).int().positive(),
-  EnrollmentID: z.number({ message: 'EnrollmentID must be a number' }).int().positive(),
-  Grade: z.string().trim().max(5, 'Grade max length is 5').optional(),
-  GPA: z.number().min(0.0).max(4.0, 'GPA must be between 0.0 and 4.0').optional()
-});
-
-const validateBody = (schema: z.ZodSchema) => {
-  return (req: Request, res: Response, next: NextFunction) => {
-    try {
-      req.body = schema.parse(req.body);
-      next();
-    } catch (error) {
-      next(error);
-    }
-  };
-};
-
-const parseId = (req: Request, res: Response): number | null => {
-  const id = parseInt(String(req.params.id), 10);
-  if (isNaN(id) || id <= 0) {
-    res.status(400).json({ error: 'Invalid ID format in URL path.' });
-    return null;
-  }
-  return id;
-};
-
-// ==========================================
-// 1. STUDENT ROUTES
-// ==========================================
-app.get('/students', async (req: Request, res: Response, next: NextFunction) => {
+// REGISTER
+app.post('/auth/register', async (req: Request, res: Response) => {
   try {
-    const studentModel = getModel('Student');
-    if (studentModel) {
-      const data = await studentModel.findMany({ include: { Enrollment: true } });
-      res.status(200).json(data);
-    } else {
-      const data = await prisma.$queryRawUnsafe(`SELECT * FROM Student;`);
-      res.status(200).json(data);
+    const { email, password, role } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email and password are required.' });
     }
-  } catch (err) { next(err); }
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({ error: 'Please enter a valid email address.' });
+    }
+
+    const existingUser = await prisma.user.findUnique({ where: { Email: email } });
+    if (existingUser) {
+      return res.status(400).json({ error: 'User with this email already exists.' });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    const newUser = await prisma.user.create({
+      data: {
+        Email: email,
+        Password: hashedPassword,
+        Role: role || 'USER',
+      },
+    });
+
+    res.status(201).json({
+      message: 'User registered successfully!',
+      user: { id: newUser.UserID, email: newUser.Email, role: newUser.Role },
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Server error during registration.' });
+  }
 });
 
-app.post('/students', validateBody(studentSchema), async (req: Request, res: Response, next: NextFunction) => {
+// LOGIN
+app.post('/auth/login', async (req: Request, res: Response) => {
+  try {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email and password are required.' });
+    }
+
+    const user = await prisma.user.findUnique({ where: { Email: email } });
+    if (!user) {
+      return res.status(401).json({ error: 'Invalid credentials: User not found.' });
+    }
+
+    const isPasswordValid = await bcrypt.compare(password, user.Password);
+    if (!isPasswordValid) {
+      return res.status(401).json({ error: 'Invalid credentials: Incorrect password.' });
+    }
+
+    res.status(200).json({
+      message: 'Login successful!',
+      user: { id: user.UserID, email: user.Email, role: user.Role },
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Server error during login.' });
+  }
+});
+
+// GET ALL USERS
+app.get('/auth/users', async (req: Request, res: Response) => {
+  try {
+    const users = await prisma.user.findMany();
+    res.json(users);
+  } catch (error) {
+    res.status(500).json({ error: 'Error fetching users.' });
+  }
+});
+
+// GET USER BY ID
+app.get('/auth/users/:id', async (req: Request, res: Response) => {
+  try {
+    const user = await prisma.user.findUnique({ where: { UserID: Number(req.params.id) } });
+    if (!user) return res.status(404).json({ error: 'User not found.' });
+    res.json(user);
+  } catch (error) {
+    res.status(500).json({ error: 'Error fetching user.' });
+  }
+});
+
+// PATCH USER (AUTO-HASHES PASSWORD IF PROVIDED)
+app.patch('/auth/users/:id', async (req: Request, res: Response) => {
+  try {
+    const userId = Number(req.params.id);
+    const { password, email, role } = req.body;
+
+    const updateData: Record<string, any> = {};
+
+    if (password) {
+      updateData.Password = await bcrypt.hash(password, 10);
+    }
+    if (email) {
+      updateData.Email = email;
+    }
+    if (role) {
+      updateData.Role = role;
+    }
+
+    if (Object.keys(updateData).length === 0) {
+      return res.status(400).json({ error: 'No valid fields provided for update.' });
+    }
+
+    const updated = await prisma.user.update({
+      where: { UserID: userId },
+      data: updateData,
+    });
+
+    res.json({ message: 'User updated successfully!', user: updated });
+  } catch (error: any) {
+    console.error('PATCH USER ERROR:', error);
+    res.status(500).json({ error: error.message || 'Error updating user.' });
+  }
+});
+
+// DELETE USER
+app.delete('/auth/users/:id', async (req: Request, res: Response) => {
+  try {
+    await prisma.user.delete({ where: { UserID: Number(req.params.id) } });
+    res.json({ message: 'User deleted successfully.' });
+  } catch (error) {
+    res.status(500).json({ error: 'Error deleting user.' });
+  }
+});
+
+
+// ========================================================
+// 2. STUDENT ENDPOINTS (FULL CRUD)
+// ========================================================
+app.get('/students', async (req: Request, res: Response) => {
+  try {
+    const students = await prisma.student.findMany();
+    res.json(students);
+  } catch (error) {
+    res.status(500).json({ error: 'Error fetching students.' });
+  }
+});
+
+app.get('/students/:id', async (req: Request, res: Response) => {
+  try {
+    const student = await prisma.student.findUnique({ where: { StudentID: Number(req.params.id) } });
+    if (!student) return res.status(404).json({ error: 'Student not found.' });
+    res.json(student);
+  } catch (error) {
+    res.status(500).json({ error: 'Error fetching student.' });
+  }
+});
+
+app.post('/students', async (req: Request, res: Response) => {
   try {
     const { StudentID, StudentName, PhoneNo, DOB, Email } = req.body;
-    const studentModel = getModel('Student');
-
-    if (studentModel) {
-      const existing = await studentModel.findUnique({ where: { StudentID } });
-      if (existing) {
-        res.status(400).json({ error: `Student with ID ${StudentID} already exists.` });
-        return;
-      }
-      const newRecord = await studentModel.create({ data: req.body });
-      res.status(201).json(newRecord);
-    } else {
-      await prisma.$executeRawUnsafe(
-        `INSERT INTO Student (StudentID, StudentName, PhoneNo, DOB, Email) VALUES (?, ?, ?, ?, ?)`,
-        StudentID, StudentName, PhoneNo || null, DOB || null, Email || null
-      );
-      res.status(201).json(req.body);
-    }
-  } catch (err) { next(err); }
+    const newStudent = await prisma.student.create({
+      data: { StudentID: Number(StudentID), StudentName, PhoneNo, DOB, Email },
+    });
+    res.status(201).json(newStudent);
+  } catch (error) {
+    res.status(500).json({ error: 'Error creating student.' });
+  }
 });
 
-app.delete('/students/:id', async (req: Request, res: Response, next: NextFunction) => {
+app.patch('/students/:id', async (req: Request, res: Response) => {
   try {
-    const id = parseId(req, res);
-    if (!id) return;
-    const studentModel = getModel('Student');
-    if (studentModel) {
-      const deleted = await studentModel.delete({ where: { StudentID: id } });
-      res.status(200).json({ message: 'Student deleted successfully', deleted });
-    } else {
-      await prisma.$executeRawUnsafe(`DELETE FROM Student WHERE StudentID = ?;`, id);
-      res.status(200).json({ message: 'Student deleted successfully', StudentID: id });
-    }
-  } catch (err) { next(err); }
+    const updated = await prisma.student.update({
+      where: { StudentID: Number(req.params.id) },
+      data: req.body,
+    });
+    res.json(updated);
+  } catch (error) {
+    res.status(500).json({ error: 'Error updating student.' });
+  }
 });
 
-// ==========================================
-// 2. TEACHER ROUTES
-// ==========================================
-app.get('/teachers', async (req: Request, res: Response, next: NextFunction) => {
+app.delete('/students/:id', async (req: Request, res: Response) => {
   try {
-    const teacherModel = getModel('Teacher');
-    if (teacherModel) {
-      const data = await teacherModel.findMany({ include: { Courses: true } });
-      res.status(200).json(data);
-    } else {
-      const data = await prisma.$queryRawUnsafe(`SELECT * FROM Teacher;`);
-      res.status(200).json(data);
-    }
-  } catch (err) { next(err); }
+    await prisma.student.delete({ where: { StudentID: Number(req.params.id) } });
+    res.json({ message: 'Student deleted successfully.' });
+  } catch (error) {
+    res.status(500).json({ error: 'Error deleting student.' });
+  }
 });
 
-app.post('/teachers', validateBody(teacherSchema), async (req: Request, res: Response, next: NextFunction) => {
+
+// ========================================================
+// 3. TEACHER ENDPOINTS (FULL CRUD)
+// ========================================================
+app.get('/teachers', async (req: Request, res: Response) => {
+  try {
+    const teachers = await prisma.teacher.findMany();
+    res.json(teachers);
+  } catch (error) {
+    res.status(500).json({ error: 'Error fetching teachers.' });
+  }
+});
+
+app.get('/teachers/:id', async (req: Request, res: Response) => {
+  try {
+    const teacher = await prisma.teacher.findUnique({ where: { TeacherID: Number(req.params.id) } });
+    if (!teacher) return res.status(404).json({ error: 'Teacher not found.' });
+    res.json(teacher);
+  } catch (error) {
+    res.status(500).json({ error: 'Error fetching teacher.' });
+  }
+});
+
+app.post('/teachers', async (req: Request, res: Response) => {
   try {
     const { TeacherID, TeacherName, Email, PhoneNo } = req.body;
-    const teacherModel = getModel('Teacher');
-
-    if (teacherModel) {
-      const existing = await teacherModel.findUnique({ where: { TeacherID } });
-      if (existing) {
-        res.status(400).json({ error: `Teacher with ID ${TeacherID} already exists.` });
-        return;
-      }
-      const newRecord = await teacherModel.create({ data: req.body });
-      console.log(`CREATED TEACHER:`, newRecord);
-      res.status(201).json(newRecord);
-    } else {
-      await prisma.$executeRawUnsafe(
-        `INSERT INTO Teacher (TeacherID, TeacherName, Email, PhoneNo) VALUES (?, ?, ?, ?)`,
-        TeacherID, TeacherName, Email || null, PhoneNo || null
-      );
-      console.log(`CREATED TEACHER (RAW SQL):`, req.body);
-      res.status(201).json(req.body);
-    }
-  } catch (err) { next(err); }
+    const newTeacher = await prisma.teacher.create({
+      data: { TeacherID: Number(TeacherID), TeacherName, Email, PhoneNo },
+    });
+    res.status(201).json(newTeacher);
+  } catch (error) {
+    res.status(500).json({ error: 'Error creating teacher.' });
+  }
 });
 
-app.delete('/teachers/:id', async (req: Request, res: Response, next: NextFunction) => {
+app.patch('/teachers/:id', async (req: Request, res: Response) => {
   try {
-    const id = parseId(req, res);
-    if (!id) return;
-    const teacherModel = getModel('Teacher');
-    if (teacherModel) {
-      const deleted = await teacherModel.delete({ where: { TeacherID: id } });
-      res.status(200).json({ message: 'Teacher deleted successfully', deleted });
-    } else {
-      await prisma.$executeRawUnsafe(`DELETE FROM Teacher WHERE TeacherID = ?;`, id);
-      res.status(200).json({ message: 'Teacher deleted successfully', TeacherID: id });
-    }
-  } catch (err) { next(err); }
+    const updated = await prisma.teacher.update({
+      where: { TeacherID: Number(req.params.id) },
+      data: req.body,
+    });
+    res.json(updated);
+  } catch (error) {
+    res.status(500).json({ error: 'Error updating teacher.' });
+  }
 });
 
-// ==========================================
-// 3. COURSES ROUTES
-// ==========================================
-app.get('/courses', async (req: Request, res: Response, next: NextFunction) => {
+app.delete('/teachers/:id', async (req: Request, res: Response) => {
   try {
-    const courseModel = getModel('Courses');
-    if (courseModel) {
-      const data = await courseModel.findMany({ include: { Teacher: true, Enrollment: true } });
-      res.status(200).json(data);
-    } else {
-      const data = await prisma.$queryRawUnsafe(`SELECT * FROM Courses;`);
-      res.status(200).json(data);
-    }
-  } catch (err) { next(err); }
+    await prisma.teacher.delete({ where: { TeacherID: Number(req.params.id) } });
+    res.json({ message: 'Teacher deleted successfully.' });
+  } catch (error) {
+    res.status(500).json({ error: 'Error deleting teacher.' });
+  }
 });
 
-app.post('/courses', validateBody(courseSchema), async (req: Request, res: Response, next: NextFunction) => {
+
+// ========================================================
+// 4. COURSES ENDPOINTS (FULL CRUD)
+// ========================================================
+app.get('/courses', async (req: Request, res: Response) => {
   try {
-    const { CourseID, CourseNmae, CreditHours, TeacherID } = req.body;
-    const courseModel = getModel('Courses');
-
-    if (courseModel) {
-      const existing = await courseModel.findUnique({ where: { CourseID } });
-      if (existing) {
-        res.status(400).json({ error: `Course with ID ${CourseID} already exists.` });
-        return;
-      }
-      const newRecord = await courseModel.create({ data: req.body });
-      res.status(201).json(newRecord);
-    } else {
-      await prisma.$executeRawUnsafe(
-        `INSERT INTO Courses (CourseID, CourseNmae, CreditHours, TeacherID) VALUES (?, ?, ?, ?)`,
-        CourseID, CourseNmae, CreditHours || null, TeacherID || null
-      );
-      res.status(201).json(req.body);
-    }
-  } catch (err) { next(err); }
+    const courses = await prisma.courses.findMany();
+    res.json(courses);
+  } catch (error) {
+    res.status(500).json({ error: 'Error fetching courses.' });
+  }
 });
 
-app.delete('/courses/:id', async (req: Request, res: Response, next: NextFunction) => {
+app.get('/courses/:id', async (req: Request, res: Response) => {
   try {
-    const id = parseId(req, res);
-    if (!id) return;
-    const courseModel = getModel('Courses');
-    if (courseModel) {
-      const deleted = await courseModel.delete({ where: { CourseID: id } });
-      res.status(200).json({ message: 'Course deleted successfully', deleted });
-    } else {
-      await prisma.$executeRawUnsafe(`DELETE FROM Courses WHERE CourseID = ?;`, id);
-      res.status(200).json({ message: 'Course deleted successfully', CourseID: id });
-    }
-  } catch (err) { next(err); }
+    const course = await prisma.courses.findUnique({ where: { CourseID: Number(req.params.id) } });
+    if (!course) return res.status(404).json({ error: 'Course not found.' });
+    res.json(course);
+  } catch (error) {
+    res.status(500).json({ error: 'Error fetching course.' });
+  }
 });
 
-// ==========================================
-// 4. ENROLLMENT ROUTES
-// ==========================================
-app.get('/enrollments', async (req: Request, res: Response, next: NextFunction) => {
+app.post('/courses', async (req: Request, res: Response) => {
   try {
-    const enrollmentModel = getModel('Enrollment');
-    if (enrollmentModel) {
-      const data = await enrollmentModel.findMany({
-        include: { Student: true, Courses: true, Results: true }
-      });
-      res.status(200).json(data);
-    } else {
-      const data = await prisma.$queryRawUnsafe(`SELECT * FROM Enrollment;`);
-      res.status(200).json(data);
-    }
-  } catch (err) { next(err); }
+    const { CourseID, CourseName, CourseCode } = req.body;
+    const newCourse = await prisma.courses.create({
+      data: { CourseID: Number(CourseID), CourseName, CourseCode },
+    });
+    res.status(201).json(newCourse);
+  } catch (error) {
+    res.status(500).json({ error: 'Error creating course.' });
+  }
 });
 
-app.post('/enrollments', validateBody(enrollmentSchema), async (req: Request, res: Response, next: NextFunction) => {
+app.patch('/courses/:id', async (req: Request, res: Response) => {
   try {
-    const { EnrollmentID, StudentID, CourseID, EnrollmentDate } = req.body;
-    const enrollmentModel = getModel('Enrollment');
-
-    if (enrollmentModel) {
-      const existing = await enrollmentModel.findUnique({ where: { EnrollmentID } });
-      if (existing) {
-        res.status(400).json({ error: `Enrollment with ID ${EnrollmentID} already exists.` });
-        return;
-      }
-      const newRecord = await enrollmentModel.create({ data: req.body });
-      res.status(201).json(newRecord);
-    } else {
-      await prisma.$executeRawUnsafe(
-        `INSERT INTO Enrollment (EnrollmentID, StudentID, CourseID, EnrollmentDate) VALUES (?, ?, ?, ?)`,
-        EnrollmentID, StudentID, CourseID, EnrollmentDate || null
-      );
-      res.status(201).json(req.body);
-    }
-  } catch (err) { next(err); }
+    const updated = await prisma.courses.update({
+      where: { CourseID: Number(req.params.id) },
+      data: req.body,
+    });
+    res.json(updated);
+  } catch (error) {
+    res.status(500).json({ error: 'Error updating course.' });
+  }
 });
 
-app.delete('/enrollments/:id', async (req: Request, res: Response, next: NextFunction) => {
+app.delete('/courses/:id', async (req: Request, res: Response) => {
   try {
-    const id = parseId(req, res);
-    if (!id) return;
-    const enrollmentModel = getModel('Enrollment');
-    if (enrollmentModel) {
-      const deleted = await enrollmentModel.delete({ where: { EnrollmentID: id } });
-      res.status(200).json({ message: 'Enrollment deleted successfully', deleted });
-    } else {
-      await prisma.$executeRawUnsafe(`DELETE FROM Enrollment WHERE EnrollmentID = ?;`, id);
-      res.status(200).json({ message: 'Enrollment deleted successfully', EnrollmentID: id });
-    }
-  } catch (err) { next(err); }
+    await prisma.courses.delete({ where: { CourseID: Number(req.params.id) } });
+    res.json({ message: 'Course deleted successfully.' });
+  } catch (error) {
+    res.status(500).json({ error: 'Error deleting course.' });
+  }
 });
 
-// ==========================================
-// 5. RESULTS ROUTES
-// ==========================================
-app.get('/results', async (req: Request, res: Response, next: NextFunction) => {
+
+// ========================================================
+// 5. ENROLLMENT ENDPOINTS (FULL CRUD)
+// ========================================================
+app.get('/enrollments', async (req: Request, res: Response) => {
   try {
-    const resultModel = getModel('Results');
-    if (resultModel) {
-      const data = await resultModel.findMany({ include: { Enrollment: true } });
-      res.status(200).json(data);
-    } else {
-      const data = await prisma.$queryRawUnsafe(`SELECT * FROM Results;`);
-      res.status(200).json(data);
-    }
-  } catch (err) { next(err); }
+    const enrollments = await prisma.enrollment.findMany();
+    res.json(enrollments);
+  } catch (error) {
+    res.status(500).json({ error: 'Error fetching enrollments.' });
+  }
 });
 
-app.post('/results', validateBody(resultSchema), async (req: Request, res: Response, next: NextFunction) => {
+app.post('/enrollments', async (req: Request, res: Response) => {
   try {
-    const { ResultID, EnrollmentID, Grade, GPA } = req.body;
-    const resultModel = getModel('Results');
-
-    if (resultModel) {
-      const existing = await resultModel.findUnique({ where: { ResultID } });
-      if (existing) {
-        res.status(400).json({ error: `Result with ID ${ResultID} already exists.` });
-        return;
-      }
-      const newRecord = await resultModel.create({ data: req.body });
-      res.status(201).json(newRecord);
-    } else {
-      await prisma.$executeRawUnsafe(
-        `INSERT INTO Results (ResultID, EnrollmentID, Grade, GPA) VALUES (?, ?, ?, ?)`,
-        ResultID, EnrollmentID, Grade || null, GPA || null
-      );
-      res.status(201).json(req.body);
-    }
-  } catch (err) { next(err); }
+    const { StudentID, CourseID } = req.body;
+    const newEnrollment = await prisma.enrollment.create({
+      data: {
+        StudentID: Number(StudentID),
+        CourseID: Number(CourseID),
+      },
+    });
+    res.status(201).json(newEnrollment);
+  } catch (error) {
+    res.status(500).json({ error: 'Error creating enrollment.' });
+  }
 });
 
-app.delete('/results/:id', async (req: Request, res: Response, next: NextFunction) => {
+app.patch('/enrollments/:id', async (req: Request, res: Response) => {
   try {
-    const id = parseId(req, res);
-    if (!id) return;
-    const resultModel = getModel('Results');
-    if (resultModel) {
-      const deleted = await resultModel.delete({ where: { ResultID: id } });
-      res.status(200).json({ message: 'Result deleted successfully', deleted });
-    } else {
-      await prisma.$executeRawUnsafe(`DELETE FROM Results WHERE ResultID = ?;`, id);
-      res.status(200).json({ message: 'Result deleted successfully', ResultID: id });
-    }
-  } catch (err) { next(err); }
+    const updated = await prisma.enrollment.update({
+      where: { EnrollmentID: Number(req.params.id) },
+      data: req.body,
+    });
+    res.json(updated);
+  } catch (error) {
+    res.status(500).json({ error: 'Error updating enrollment.' });
+  }
 });
 
-// ==========================================
-// ERROR HANDLING & SERVER BOOT
-// ==========================================
+app.delete('/enrollments/:id', async (req: Request, res: Response) => {
+  try {
+    await prisma.enrollment.delete({ where: { EnrollmentID: Number(req.params.id) } });
+    res.json({ message: 'Enrollment deleted successfully.' });
+  } catch (error) {
+    res.status(500).json({ error: 'Error deleting enrollment.' });
+  }
+});
+
+
+// ========================================================
+// 6. RESULTS ENDPOINTS (FULL CRUD)
+// ========================================================
+app.get('/results', async (req: Request, res: Response) => {
+  try {
+    const results = await prisma.results.findMany();
+    res.json(results);
+  } catch (error) {
+    res.status(500).json({ error: 'Error fetching results.' });
+  }
+});
+
+app.post('/results', async (req: Request, res: Response) => {
+  try {
+    const { EnrollmentID, Marks, Grade } = req.body;
+    const newResult = await prisma.results.create({
+      data: {
+        EnrollmentID: Number(EnrollmentID),
+        Marks: Number(Marks),
+        Grade,
+      },
+    });
+    res.status(201).json(newResult);
+  } catch (error) {
+    res.status(500).json({ error: 'Error creating result record.' });
+  }
+});
+
+app.patch('/results/:id', async (req: Request, res: Response) => {
+  try {
+    const updated = await prisma.results.update({
+      where: { ResultID: Number(req.params.id) },
+      data: req.body,
+    });
+    res.json(updated);
+  } catch (error) {
+    res.status(500).json({ error: 'Error updating result record.' });
+  }
+});
+
+app.delete('/results/:id', async (req: Request, res: Response) => {
+  try {
+    await prisma.results.delete({ where: { ResultID: Number(req.params.id) } });
+    res.json({ message: 'Result record deleted successfully.' });
+  } catch (error) {
+    res.status(500).json({ error: 'Error deleting result record.' });
+  }
+});
+
+
+// ========================================================
+// SERVER SETUP & 404 HANDLER
+// ========================================================
 app.use((req: Request, res: Response) => {
   res.status(404).json({ error: `Route ${req.originalUrl} not found.` });
 });
 
-app.use((err: any, req: Request, res: Response, next: NextFunction) => {
-  if (err instanceof ZodError) {
-    res.status(400).json({ error: 'Validation Failed', details: err.issues.map((e) => e.message) });
-    return;
-  }
-  console.error('SERVER ERROR:', err);
-  res.status(500).json({ error: 'Internal Server Error.' });
-});
-
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`==================================================`);
-  console.log(`🚀 System Live at http://localhost:${PORT}`);
-  console.log(`==================================================`);
+  console.log(`🚀 Server listening on http://localhost:${PORT}`);
 });

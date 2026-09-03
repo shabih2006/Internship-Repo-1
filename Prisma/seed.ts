@@ -1,102 +1,63 @@
 import { PrismaClient } from '@prisma/client';
+import bcrypt from 'bcryptjs';
 
 const prisma = new PrismaClient();
 
 async function main() {
-  console.log('Resetting schema and recreating tables...');
+  console.log('🌱 Seeding fresh data into PostgreSQL...');
 
-  // 1. Disable foreign key checks to safely drop old tables
-  await prisma.$executeRawUnsafe(`PRAGMA foreign_keys = OFF;`);
+  const adminPassword = await bcrypt.hash('admin123', 10);
+  const userPassword = await bcrypt.hash('user123', 10);
 
-  await prisma.$executeRawUnsafe(`DROP TABLE IF EXISTS Results;`);
-  await prisma.$executeRawUnsafe(`DROP TABLE IF EXISTS Enrollment;`);
-  await prisma.$executeRawUnsafe(`DROP TABLE IF EXISTS Courses;`);
-  await prisma.$executeRawUnsafe(`DROP TABLE IF EXISTS Teacher;`);
-  await prisma.$executeRawUnsafe(`DROP TABLE IF EXISTS Student;`);
+  // 1. Seed Users
+  await prisma.user.createMany({
+    data: [
+      { Email: 'admin@cs.edu', Password: adminPassword, Role: 'ADMIN' },
+      { Email: 'student@cs.edu', Password: userPassword, Role: 'USER' },
+    ],
+  });
 
-  // 2. Re-enable foreign key checks
-  await prisma.$executeRawUnsafe(`PRAGMA foreign_keys = ON;`);
+  // 2. Seed Teachers
+  await prisma.teacher.createMany({
+    data: [
+      { TeacherID: 1, TeacherName: 'Dr. Usman Ali', Email: 'usman@umt.edu.pk', PhoneNo: '122-3456-5423' },
+      { TeacherID: 2, TeacherName: 'Arsalan Ahmed', Email: 'arsalan@cs.edu', PhoneNo: '555-0199-8821' },
+    ],
+  });
 
-  // 3. Create fresh tables with exact primary/foreign keys
-  await prisma.$executeRawUnsafe(`
-    CREATE TABLE Student (
-      StudentID INT PRIMARY KEY,
-      StudentName VARCHAR(100) NOT NULL,
-      PhoneNo VARCHAR(20),
-      DOB DATE,
-      Email VARCHAR(100)
-    );
-  `);
+  // 3. Seed Students
+  await prisma.student.createMany({
+    data: [
+      { StudentID: 101, StudentName: 'Shabih Haider', PhoneNo: '0300-1234567', DOB: '2002-05-14', Email: 'shabih@univ.edu.pk' },
+      { StudentID: 102, StudentName: 'Hassan Naeem', PhoneNo: '0311-7654321', DOB: '2003-08-22', Email: 'hassan@univ.edu.pk' },
+    ],
+  });
 
-  await prisma.$executeRawUnsafe(`
-    CREATE TABLE Teacher (
-      TeacherID INT PRIMARY KEY,
-      TeacherName VARCHAR(100) NOT NULL,
-      Email VARCHAR(100),
-      PhoneNo VARCHAR(20)
-    );
-  `);
+  // 4. Seed Courses
+  await prisma.courses.createMany({
+    data: [
+      { CourseID: 201, CourseNmae: 'Database Systems', CreditHours: 3, TeacherID: 1 },
+      { CourseID: 202, CourseNmae: 'Data Structures', CreditHours: 4, TeacherID: 2 },
+    ],
+  });
 
-  await prisma.$executeRawUnsafe(`
-    CREATE TABLE Courses (
-      CourseID INT PRIMARY KEY,
-      CourseNmae VARCHAR(100) NOT NULL,
-      CreditHours INT,
-      TeacherID INT,
-      FOREIGN KEY (TeacherID) REFERENCES Teacher(TeacherID)
-    );
-  `);
+  // 5. Seed Enrollments
+  await prisma.enrollment.createMany({
+    data: [
+      { EnrollmentID: 501, StudentID: 101, CourseID: 201, EnrollmentDate: '2026-09-02' },
+      { EnrollmentID: 502, StudentID: 102, CourseID: 202, EnrollmentDate: '2026-09-02' },
+    ],
+  });
 
-  await prisma.$executeRawUnsafe(`
-    CREATE TABLE Enrollment (
-      EnrollmentID INT PRIMARY KEY,
-      StudentID INT NOT NULL,
-      CourseID INT NOT NULL,
-      EnrollmentDate DATE,
-      FOREIGN KEY (StudentID) REFERENCES Student(StudentID),
-      FOREIGN KEY (CourseID) REFERENCES Courses(CourseID)
-    );
-  `);
+  // 6. Seed Results
+  await prisma.results.createMany({
+    data: [
+      { ResultID: 901, EnrollmentID: 501, Grade: 'A+', GPA: 4.0 },
+      { ResultID: 902, EnrollmentID: 502, Grade: 'A', GPA: 3.7 },
+    ],
+  });
 
-  await prisma.$executeRawUnsafe(`
-    CREATE TABLE Results (
-      ResultID INT PRIMARY KEY,
-      EnrollmentID INT NOT NULL,
-      Grade VARCHAR(5),
-      GPA DECIMAL(3,2),
-      FOREIGN KEY (EnrollmentID) REFERENCES Enrollment(EnrollmentID)
-    );
-  `);
-
-  console.log('Inserting seed records...');
-
-  // 4. Insert sample data across all 5 tables
-  await prisma.$executeRawUnsafe(`
-    INSERT INTO Teacher (TeacherID, TeacherName, Email, PhoneNo)
-    VALUES (1, 'Dr. Smith', 'smith@example.com', '123-456-7890');
-  `);
-
-  await prisma.$executeRawUnsafe(`
-    INSERT INTO Student (StudentID, StudentName, Email, PhoneNo)
-    VALUES (1, 'Shabih Haider', 'shabih@example.com', '987-654-3210');
-  `);
-
-  await prisma.$executeRawUnsafe(`
-    INSERT INTO Courses (CourseID, CourseNmae, CreditHours, TeacherID)
-    VALUES (101, 'Intro to Computer Science', 3, 1);
-  `);
-
-  await prisma.$executeRawUnsafe(`
-    INSERT INTO Enrollment (EnrollmentID, StudentID, CourseID, EnrollmentDate)
-    VALUES (1, 1, 101, '2026-09-01');
-  `);
-
-  await prisma.$executeRawUnsafe(`
-    INSERT INTO Results (ResultID, EnrollmentID, Grade, GPA)
-    VALUES (1, 1, 'A', 4.0);
-  `);
-
-  console.log('✅ Database seeded with all 5 tables successfully!');
+  console.log('🎉 PostgreSQL database seeded successfully!');
 }
 
 main()
