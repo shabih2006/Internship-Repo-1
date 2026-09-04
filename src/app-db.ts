@@ -7,6 +7,7 @@ import jwt from 'jsonwebtoken';
 
 import { AuthController } from './controllers/auth.controller';
 import { StudentController } from './controllers/student.controller';
+import { ChatController } from './controllers/chat.controller.js';
 
 const app = express();
 
@@ -19,6 +20,7 @@ app.use(express.json());
 
 const authController = new AuthController();
 const studentController = new StudentController();
+const chatController = new ChatController();
 
 // ========================================================
 // AUTHENTICATION & AUTHORIZATION MIDDLEWARE
@@ -72,6 +74,9 @@ app.get('/students', authenticateToken, (req, res) => studentController.getAll(r
 app.get('/students/:id', authenticateToken, (req, res) => studentController.getById(req, res));
 app.post('/students', authenticateToken, (req, res) => studentController.create(req, res));
 app.delete('/students/:id', authenticateToken, authorizeRoles('ADMIN'), (req, res) => studentController.delete(req, res));
+
+// AI CHATBOT ROUTE
+app.post('/chat', (req, res) => chatController.handleChat(req, res));
 
 // 404 HANDLER
 app.use((req: Request, res: Response) => {
