@@ -87,6 +87,9 @@ app.use((req: Request, res: Response) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`🚀 Server listening on http://localhost:${PORT}`);
 });
+
+// Configure explicit server timeout handling (15s)
+server.timeout = 15000;

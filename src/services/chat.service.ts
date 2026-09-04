@@ -1,5 +1,5 @@
 import { ChatRequestDto, ChatResponseDto } from '../dtos/chat.dto.js';
-import { ChatRepository } from '../repositories/chat.repository.js';
+import { ChatRepository } from '../repositories/chat.repository';
 
 export class ChatService {
   private chatRepository: ChatRepository;
@@ -36,22 +36,41 @@ export class ChatService {
         reply = mockReplies[1];
       }
     } else {
-      // Standard live API fetch
-      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: dto.message }] }],
-        }),
-      });
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
 
-      const data: any = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error?.message || 'Failed to fetch AI response.');
+      try {
+        const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: dto.message }] }],
+          }),
+          signal: controller.signal,
+        });
+
+        clearTimeout(timeoutId);
+
+        const data: any = await response.json();
+        if (!response.ok) {
+          // Task 7.1 Item 6: Handle API/Quota errors gracefully
+          const errorMsg = data.error?.message || 'External AI service encountered an issue.';
+          throw new Error(`AI Service Unavailable: ${errorMsg}`);
+        }
+
+        reply = data.candidates?.[0]?.content?.parts?.[0]?.text || 'No response generated.';
+      } catch (error: any) {
+        clearTimeout(timeoutId);
+
+        if (error.name === 'AbortError') {
+          throw new Error('The AI service timed out. Please try again in a few moments.');
+        }
+
+        // Catch network or connection failures cleanly
+        console.error('ChatService External API Error:', error.message);
+        throw new Error(error.message || 'Unable to connect to the AI service. Please try again later.');
       }
-
-      reply = data.candidates?.[0]?.content?.parts?.[0]?.text || 'No response generated.';
     }
 
     // Persist conversation to PostgreSQL
