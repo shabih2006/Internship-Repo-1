@@ -5,8 +5,8 @@ import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 
-import { AuthController } from './controllers/auth.controller';
-import { StudentController } from './controllers/student.controller';
+import { AuthController } from './controllers/auth.controller.js';
+import { StudentController } from './controllers/student.controller.js';
 import { ChatController } from './controllers/chat.controller.js';
 
 const app = express();
@@ -75,8 +75,11 @@ app.get('/students/:id', authenticateToken, (req, res) => studentController.getB
 app.post('/students', authenticateToken, (req, res) => studentController.create(req, res));
 app.delete('/students/:id', authenticateToken, authorizeRoles('ADMIN'), (req, res) => studentController.delete(req, res));
 
-// AI CHATBOT ROUTE
+// ========================================================
+// AI CHATBOT ROUTES (TASK 7.1)
+// ========================================================
 app.post('/chat', (req, res) => chatController.handleChat(req, res));
+app.get('/chat/history', (req, res) => chatController.getHistory(req, res));
 
 // 404 HANDLER
 app.use((req: Request, res: Response) => {

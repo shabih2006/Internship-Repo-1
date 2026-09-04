@@ -57,3 +57,10 @@ model Results {
   GPA          Float?
   Enrollment   Enrollment @relation(fields: [EnrollmentID], references: [EnrollmentID])
 }
+
+model Conversation {
+  id        String   @id @default(uuid())
+  userPrompt String
+  aiReply   String
+  createdAt DateTime @default(now())
+}

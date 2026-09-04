@@ -9,6 +9,7 @@
   "dependencies": {
     "@google/genai": "^2.21.0",
     "@google/generative-ai": "^0.24.1",
+    "@huggingface/inference": "^4.13.28",
     "bcryptjs": "^3.0.3",
     "dotenv": "^17.4.2",
     "express": "^4.19.2",
@@ -34,5 +35,8 @@
     "@prisma/client@5.22.0": true,
     "prisma@5.22.0": true,
     "@prisma/engines@5.22.0": true
-  }
+  },
+  "prisma": {
+  "seed": "npx tsx prisma/seed.ts"
+}
 }
