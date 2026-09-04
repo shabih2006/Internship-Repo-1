@@ -4,6 +4,7 @@ dotenv.config();
 import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
+import rateLimit from 'express-rate-limit';
 
 import { AuthController } from './controllers/auth.controller.js';
 import { StudentController } from './controllers/student.controller.js';
@@ -21,6 +22,20 @@ app.use(express.json());
 const authController = new AuthController();
 const studentController = new StudentController();
 const chatController = new ChatController();
+
+// ========================================================
+// RATE LIMITING / USAGE GUARD (TASK 7.1 ITEM 7)
+// ========================================================
+const chatRateLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000, // 1 minute window
+  max: 5, // Limit each IP to 5 requests per minute
+  message: {
+    success: false,
+    error: 'Too many chat requests from this IP. Please wait a minute before trying again.',
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 // ========================================================
 // AUTHENTICATION & AUTHORIZATION MIDDLEWARE
@@ -65,7 +80,7 @@ const authorizeRoles = (...allowedRoles: string[]) => {
 };
 
 // ========================================================
-// ROUTE DEFINITIONS (DELEGATED TO CONTROLLERS)
+// ROUTE DEFINITIONS
 // ========================================================
 app.post('/auth/register', (req, res) => authController.register(req, res));
 app.post('/auth/login', (req, res) => authController.login(req, res));
@@ -76,9 +91,9 @@ app.post('/students', authenticateToken, (req, res) => studentController.create(
 app.delete('/students/:id', authenticateToken, authorizeRoles('ADMIN'), (req, res) => studentController.delete(req, res));
 
 // ========================================================
-// AI CHATBOT ROUTES (TASK 7.1)
+// AI CHATBOT ROUTES WITH RATE LIMITING (TASK 7.1)
 // ========================================================
-app.post('/chat', (req, res) => chatController.handleChat(req, res));
+app.post('/chat', chatRateLimiter, (req, res) => chatController.handleChat(req, res));
 app.get('/chat/history', (req, res) => chatController.getHistory(req, res));
 
 // 404 HANDLER
@@ -91,5 +106,4 @@ const server = app.listen(PORT, () => {
   console.log(`🚀 Server listening on http://localhost:${PORT}`);
 });
 
-// Configure explicit server timeout handling (15s)
 server.timeout = 15000;
