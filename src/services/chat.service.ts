@@ -1,7 +1,7 @@
 import { ChatRequestDto, ChatResponseDto } from '../dtos/chat.dto.js';
-import { ChatRepository } from '../repositories/chat.repository';
+import { ChatRepository } from '../repositories/chat.repository.js';
 
-export class ChatService {
+export default class ChatService {
   private chatRepository: ChatRepository;
 
   constructor() {
@@ -54,7 +54,6 @@ export class ChatService {
 
         const data: any = await response.json();
         if (!response.ok) {
-          // Task 7.1 Item 6: Handle API/Quota errors gracefully
           const errorMsg = data.error?.message || 'External AI service encountered an issue.';
           throw new Error(`AI Service Unavailable: ${errorMsg}`);
         }
@@ -67,7 +66,6 @@ export class ChatService {
           throw new Error('The AI service timed out. Please try again in a few moments.');
         }
 
-        // Catch network or connection failures cleanly
         console.error('ChatService External API Error:', error.message);
         throw new Error(error.message || 'Unable to connect to the AI service. Please try again later.');
       }
