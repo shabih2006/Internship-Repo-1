@@ -1,5 +1,6 @@
 import { ChatRequestDto, ChatResponseDto } from '../dtos/chat.dto.js';
 import { ChatRepository } from '../repositories/chat.repository.js';
+import { STUDY_ASSISTANT_PROMPT } from '../config/prompt.config.js';
 
 export default class ChatService {
   private chatRepository: ChatRepository;
@@ -8,7 +9,6 @@ export default class ChatService {
     this.chatRepository = new ChatRepository();
   }
 
-  // Fetch full multi-turn conversation history from PostgreSQL
   async getHistory() {
     return await this.chatRepository.getAllConversations();
   }
@@ -21,31 +21,40 @@ export default class ChatService {
     const apiKey = process.env.GEMINI_API_KEY || '';
     let reply = '';
 
-    // Local fallback for AQ. tokens or dev environments
-    if (apiKey.startsWith('AQ.')) {
-      const mockReplies = [
-        `AI Response: Clean Architecture is a software design philosophy that separates code into distinct layers (Entities, Use Cases, Controllers) to keep business logic independent of frameworks and databases.`,
-        `AI Response: Here is a quick joke for you! Why do programmers prefer dark mode? Because light attracts bugs! 🐛`,
-        `AI Response: Processing your request regarding "${dto.message}". Everything is structured cleanly!`,
-      ];
+    // Check off-topic keywords directly from central config
+    const lowerMessage = dto.message.toLowerCase();
+    const isOffTopic = STUDY_ASSISTANT_PROMPT.offTopicKeywords.some((keyword) =>
+      lowerMessage.includes(keyword)
+    );
 
-      reply = mockReplies[2];
-      if (dto.message.toLowerCase().includes('clean architecture')) {
-        reply = mockReplies[0];
-      } else if (dto.message.toLowerCase().includes('joke')) {
-        reply = mockReplies[1];
-      }
+    if (isOffTopic) {
+      reply = STUDY_ASSISTANT_PROMPT.refusalMessage;
+    } else if (apiKey.startsWith('AQ.')) {
+      reply = `**[Study Assistant AI]**\n\nProcessing your academic query regarding "${dto.message}". Here is a structured overview...`;
     } else {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 10000);
 
       try {
         const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+        const fullSystemInstruction = `${STUDY_ASSISTANT_PROMPT.systemRole}\n${STUDY_ASSISTANT_PROMPT.constraints}`;
+
+        const contents = [
+          ...STUDY_ASSISTANT_PROMPT.fewShotExamples,
+          {
+            role: 'user',
+            parts: [{ text: dto.message }],
+          },
+        ];
+
         const response = await fetch(endpoint, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            contents: [{ parts: [{ text: dto.message }] }],
+            systemInstruction: {
+              parts: [{ text: fullSystemInstruction }],
+            },
+            contents,
           }),
           signal: controller.signal,
         });
