@@ -87,6 +87,7 @@ app.delete('/students/:id', authenticateToken, authorizeRoles('ADMIN'), (req, re
 // AI CHATBOT ROUTES
 app.post('/chat', chatRateLimiter, authenticateToken, (req, res) => chatController.handleChat(req, res));
 app.get('/chat/history', authenticateToken, (req, res) => chatController.getHistory(req, res));
+app.put('/chat/preferences', authenticateToken, (req, res) => chatController.updatePreferences(req, res));
 
 // 404 HANDLER
 app.use((req: Request, res: Response) => {

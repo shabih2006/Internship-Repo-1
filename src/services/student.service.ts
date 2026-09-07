@@ -1,4 +1,4 @@
-import { StudentRepository } from '../repositories/student.repository';
+import { StudentRepository } from '../repositories/student.repository.js';
 import { CreateStudentDto } from '../dtos/student.dto.js';
 
 const studentRepository = new StudentRepository();

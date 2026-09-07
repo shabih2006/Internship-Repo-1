@@ -59,8 +59,22 @@ model Results {
 }
 
 model Conversation {
-  id        String   @id @default(uuid())
-  userPrompt String
-  aiReply   String
-  createdAt DateTime @default(now())
+  id        Int      @id @default(autoincrement())
+  studentId Int      @map("student_id")
+  role      String
+  message   String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("conversation")
+}
+
+model UserPreference {
+  id               Int      @id @default(autoincrement())
+  studentId        Int      @unique @map("student_id")
+  preferredLanguage String   @default("English") @map("preferred_language")
+  learningStyle    String   @default("Detailed") @map("learning_style")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  @@map("user_preference")
 }

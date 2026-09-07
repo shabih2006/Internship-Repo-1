@@ -11,8 +11,8 @@ export default class ChatService {
     this.chatRepository = new ChatRepository();
   }
 
-  async getHistory() {
-    return await this.chatRepository.getAllConversations();
+  async getHistory(studentId?: number) {
+    return await this.chatRepository.getAllConversations(studentId);
   }
 
   async generateResponse(studentId: number, dto: ChatRequestDto): Promise<ChatResponseDto> {
@@ -21,7 +21,6 @@ export default class ChatService {
     }
 
     const reply = await this.aiProxyService.generateResponse(studentId, dto.message);
-
     return { reply };
   }
 }

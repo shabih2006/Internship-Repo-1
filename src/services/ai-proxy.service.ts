@@ -1,14 +1,13 @@
 import { LiveAIService } from './live-ai.service.js';
-import { type IAIService } from './ai.interface.js';
 
-export class AIProxyService implements IAIService {
-  private primaryService: LiveAIService;
+export class AIProxyService {
+  private liveAIService: LiveAIService;
 
   constructor() {
-    this.primaryService = new LiveAIService();
+    this.liveAIService = new LiveAIService();
   }
 
   async generateResponse(studentId: number, prompt: string): Promise<string> {
-    return this.primaryService.generateResponse(studentId, prompt);
+    return await this.liveAIService.generateResponse(studentId, prompt);
   }
 }

@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { AuthService } from '../services/auth.service';
+import { AuthService } from '../services/auth.service.js';
 
 const authService = new AuthService();
 const JWT_SECRET = process.env.JWT_SECRET!;
