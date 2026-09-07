@@ -78,3 +78,13 @@ model UserPreference {
 
   @@map("user_preference")
 }
+
+model Document {
+  id        Int      @id @default(autoincrement())
+  filename  String
+  filepath  String
+  filesize  Int
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("document")
+}
