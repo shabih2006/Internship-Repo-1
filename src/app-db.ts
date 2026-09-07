@@ -23,12 +23,10 @@ const authController = new AuthController();
 const studentController = new StudentController();
 const chatController = new ChatController();
 
-// ========================================================
-// RATE LIMITING / USAGE GUARD (TASK 7.1 ITEM 7)
-// ========================================================
+// RATE LIMITER
 const chatRateLimiter = rateLimit({
-  windowMs: 1 * 60 * 1000, // 1 minute window
-  max: 5, // Limit each IP to 5 requests per minute
+  windowMs: 1 * 60 * 1000,
+  max: 5,
   message: {
     success: false,
     error: 'Too many chat requests from this IP. Please wait a minute before trying again.',
@@ -37,9 +35,7 @@ const chatRateLimiter = rateLimit({
   legacyHeaders: false,
 });
 
-// ========================================================
-// AUTHENTICATION & AUTHORIZATION MIDDLEWARE
-// ========================================================
+// AUTHENTICATION MIDDLEWARE
 interface AuthenticatedRequest extends Request {
   user?: any;
 }
@@ -79,9 +75,7 @@ const authorizeRoles = (...allowedRoles: string[]) => {
   };
 };
 
-// ========================================================
 // ROUTE DEFINITIONS
-// ========================================================
 app.post('/auth/register', (req, res) => authController.register(req, res));
 app.post('/auth/login', (req, res) => authController.login(req, res));
 
@@ -90,11 +84,9 @@ app.get('/students/:id', authenticateToken, (req, res) => studentController.getB
 app.post('/students', authenticateToken, (req, res) => studentController.create(req, res));
 app.delete('/students/:id', authenticateToken, authorizeRoles('ADMIN'), (req, res) => studentController.delete(req, res));
 
-// ========================================================
-// AI CHATBOT ROUTES WITH RATE LIMITING (TASK 7.1)
-// ========================================================
-app.post('/chat', chatRateLimiter, (req, res) => chatController.handleChat(req, res));
-app.get('/chat/history', (req, res) => chatController.getHistory(req, res));
+// AI CHATBOT ROUTES
+app.post('/chat', chatRateLimiter, authenticateToken, (req, res) => chatController.handleChat(req, res));
+app.get('/chat/history', authenticateToken, (req, res) => chatController.getHistory(req, res));
 
 // 404 HANDLER
 app.use((req: Request, res: Response) => {

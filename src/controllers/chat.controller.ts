@@ -1,39 +1,38 @@
 import { Request, Response } from 'express';
 import ChatService from '../services/chat.service.js';
 
-const chatService = new ChatService();
+interface AuthenticatedRequest extends Request {
+  user?: {
+    id: number;
+    role: string;
+  };
+}
 
 export class ChatController {
-  async handleChat(req: Request, res: Response): Promise<void> {
-    try {
-      const { message } = req.body;
-      if (!message || typeof message !== 'string' || message.trim() === '') {
-        res.status(400).json({ error: 'Message content cannot be empty.' });
-        return;
-      }
+  private chatService: ChatService;
 
-      const result = await chatService.generateResponse({ message });
+  constructor() {
+    this.chatService = new ChatService();
+  }
+
+  async handleChat(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      // Extract studentId from authenticated JWT payload
+      const studentId = req.user?.id || 1;
+      
+      const result = await this.chatService.generateResponse(studentId, req.body);
       res.status(200).json(result);
     } catch (error: any) {
-      console.error('ChatController Error:', error);
-
-      const statusCode = error.status || 500;
-      const errorMessage = error.message || 'Our AI assistant is temporarily unavailable. Please try again later.';
-
-      res.status(statusCode).json({
-        success: false,
-        error: errorMessage,
-      });
+      res.status(500).json({ success: false, error: error.message });
     }
   }
 
   async getHistory(_req: Request, res: Response): Promise<void> {
     try {
-      const history = await chatService.getHistory();
-      res.status(200).json({ history });
+      const history = await this.chatService.getHistory();
+      res.status(200).json({ success: true, history });
     } catch (error: any) {
-      console.error('ChatController History Error:', error);
-      res.status(500).json({ error: 'Failed to retrieve chat history.' });
+      res.status(500).json({ success: false, error: error.message });
     }
   }
 }
