@@ -3,6 +3,10 @@ import { sttService } from '../services/stt.service.js';
 import { similarityService } from '../services/similarity.service.js';
 import { ttsService } from '../services/tts.service.js';
 import axios from 'axios';
+import https from 'https';
+
+// Keep HTTP connection alive to prevent socket hang-ups during LLM generation
+const httpsAgent = new https.Agent({ keepAlive: true });
 
 export class VoiceController {
   async handleAudioUpload(req: Request, res: Response): Promise<void> {
@@ -24,9 +28,9 @@ export class VoiceController {
       const rawDocId = req.body?.documentId;
       const targetDocId = rawDocId ? Number(rawDocId) : undefined;
 
-      // 3. Search vector DB for matching context chunks
+      // 3. Search vector DB for matching context chunks (topK = 12 for overviews)
       const isOverviewQuery = /key points|summarize|summary|overview|discuss|about/i.test(transcript);
-      const topKCount = isOverviewQuery ? 5 : 3;
+      const topKCount = isOverviewQuery ? 12 : 5;
 
       let relevantChunks = await similarityService.findSimilarChunks(
         transcript,
@@ -54,31 +58,43 @@ export class VoiceController {
           )
           .join('\n\n');
 
-        const systemPrompt = `You are an AI voice assistant. Answer the user's spoken question using ONLY the provided document context below. Keep it short and conversational for voice playback. Cite sources like [Source 1].\n\nDOCUMENT CONTEXT:\n${contextText}`;
+        const systemPrompt = `You are an AI voice assistant. Provide an extensive, highly detailed, multi-paragraph explanation to answer the user's question using ONLY the provided document context below. Write at least 3 to 4 full paragraphs detailing every section, point, and nuance mentioned in the context.\n\nDOCUMENT CONTEXT:\n${contextText}`;
+
+        const groqApiKey = process.env.GROQ_API_KEY;
+        const groqModel = process.env.GROQ_MODEL || 'openai/gpt-oss-120b';
 
         try {
+          // Send request to Groq API with 60s timeout and keepAlive agent
           const response = await axios.post(
-            'https://openrouter.ai/api/v1/chat/completions',
+            'https://api.groq.com/openai/v1/chat/completions',
             {
-              model: 'meta-llama/llama-3.1-8b-instruct:free',
+              model: groqModel,
               messages: [
                 { role: 'system', content: systemPrompt },
                 { role: 'user', content: transcript },
               ],
               temperature: 0.1,
+              max_tokens: 1000,
             },
             {
               headers: {
-                Authorization: `Bearer ${process.env.OPENROUTER_API_KEY || 'sk-or-v1-guest'}`,
+                Authorization: `Bearer ${groqApiKey}`,
                 'Content-Type': 'application/json',
               },
+              timeout: 60000, // 60s timeout to prevent socket dropouts
+              httpsAgent,
             }
           );
 
           aiAnswer = response.data?.choices?.[0]?.message?.content || 'No answer generated.';
         } catch (apiError: any) {
-          const primarySource = filteredChunks[0];
-          aiAnswer = `Based on Document #${primarySource.documentId} [Source 1]: ${primarySource.content.substring(0, 200)}...`;
+          console.error('Groq API Error Detail:', apiError?.response?.data || apiError?.message);
+
+          // Full context fallback without length truncation
+          aiAnswer = filteredChunks
+            .slice(0, 5)
+            .map((c, idx) => `From Source ${idx + 1}: ${c.content}`)
+            .join(' ');
         }
       }
 
