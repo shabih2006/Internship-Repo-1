@@ -9,6 +9,8 @@ import rateLimit from 'express-rate-limit';
 import { AuthController } from './controllers/auth.controller.js';
 import { StudentController } from './controllers/student.controller.js';
 import { ChatController } from './controllers/chat.controller.js';
+import { DocumentController } from './controllers/document.controller.js';
+import { uploadPdf } from './middlewares/upload.middleware.js';
 
 const app = express();
 
@@ -22,6 +24,7 @@ app.use(express.json());
 const authController = new AuthController();
 const studentController = new StudentController();
 const chatController = new ChatController();
+const documentController = new DocumentController();
 
 // RATE LIMITER
 const chatRateLimiter = rateLimit({
@@ -88,6 +91,11 @@ app.delete('/students/:id', authenticateToken, authorizeRoles('ADMIN'), (req, re
 app.post('/chat', chatRateLimiter, authenticateToken, (req, res) => chatController.handleChat(req, res));
 app.get('/chat/history', authenticateToken, (req, res) => chatController.getHistory(req, res));
 app.put('/chat/preferences', authenticateToken, (req, res) => chatController.updatePreferences(req, res));
+
+// RAG DOCUMENT ROUTES
+app.post('/documents/upload', authenticateToken, uploadPdf.single('file'), (req, res) =>
+  documentController.uploadDocument(req, res)
+);
 
 // 404 HANDLER
 app.use((req: Request, res: Response) => {

@@ -21,6 +21,7 @@
     "jsonwebtoken": "^9.0.3",
     "multer": "^2.3.0",
     "pdf-parse": "^2.4.5",
+    "pdf-parse-fixed": "^1.1.1",
     "pg": "^8.23.0",
     "zod": "^4.5.4"
   },
