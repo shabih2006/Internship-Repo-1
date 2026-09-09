@@ -85,6 +85,21 @@ model Document {
   filepath  String
   filesize  Int
   createdAt DateTime @default(now()) @map("created_at")
+  chunks    DocumentChunk[]
 
   @@map("document")
+}
+
+
+model DocumentChunk {
+  id          Int      @id @default(autoincrement())
+  documentId  Int      @map("document_id")
+  chunkIndex  Int      @map("chunk_index")
+  content     String   @db.Text
+  embedding   String   @db.Text // JSON string representation of the vector array
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  document    Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@map("document_chunk")
 }

@@ -5,14 +5,18 @@ import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import rateLimit from 'express-rate-limit';
+import { audioUpload } from './middleware/audioUpload.middleware.js';
+import { VoiceController } from './controllers/voice.controller.js';
 
 import { AuthController } from './controllers/auth.controller.js';
 import { StudentController } from './controllers/student.controller.js';
 import { ChatController } from './controllers/chat.controller.js';
 import { DocumentController } from './controllers/document.controller.js';
 import { uploadPdf } from './middlewares/upload.middleware.js';
+import { RagController } from './controllers/rag.controller.js';
 
 const app = express();
+const ragController = new RagController();
 
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET) {
@@ -25,7 +29,7 @@ const authController = new AuthController();
 const studentController = new StudentController();
 const chatController = new ChatController();
 const documentController = new DocumentController();
-
+const voiceController = new VoiceController();
 // RATE LIMITER
 const chatRateLimiter = rateLimit({
   windowMs: 1 * 60 * 1000,
@@ -81,6 +85,9 @@ const authorizeRoles = (...allowedRoles: string[]) => {
 // ROUTE DEFINITIONS
 app.post('/auth/register', (req, res) => authController.register(req, res));
 app.post('/auth/login', (req, res) => authController.login(req, res));
+app.post('/documents/search', authenticateToken, (req, res) =>
+  documentController.searchDocuments(req, res)
+);
 
 app.get('/students', authenticateToken, (req, res) => studentController.getAll(req, res));
 app.get('/students/:id', authenticateToken, (req, res) => studentController.getById(req, res));
@@ -95,6 +102,12 @@ app.put('/chat/preferences', authenticateToken, (req, res) => chatController.upd
 // RAG DOCUMENT ROUTES
 app.post('/documents/upload', authenticateToken, uploadPdf.single('file'), (req, res) =>
   documentController.uploadDocument(req, res)
+);
+app.post('/ai/chat-rag', authenticateToken, (req, res) =>
+  ragController.askQuestion(req, res)
+);
+app.post('/ai/voice-upload', authenticateToken, audioUpload.single('audio'), (req, res) =>
+  voiceController.handleAudioUpload(req, res)
 );
 
 // 404 HANDLER

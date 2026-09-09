@@ -30,7 +30,7 @@ export class AuthService {
     };
   }
 
-  async loginUser(email: string, password: string, isTestExpiry: boolean, secret: string) {
+  async loginUser(email: string, password: string, secret: string) {
     const user = await userRepository.findByEmail(email);
     if (!user) {
       throw new Error('Invalid credentials: User not found.');
@@ -41,16 +41,15 @@ export class AuthService {
       throw new Error('Invalid credentials: Incorrect password.');
     }
 
-    const expiresIn = isTestExpiry ? '5s' : '1h';
+    // Token generated without an options object lived forever!
     const token = jwt.sign(
       { userId: user.UserID, email: user.Email, role: user.Role },
-      secret,
-      { expiresIn }
+      secret
     );
 
     return {
       token,
-      expiresIn,
+      expiresIn: 'never',
       user: { id: user.UserID, email: user.Email, role: user.Role },
     };
   }
