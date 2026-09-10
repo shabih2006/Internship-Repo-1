@@ -5,15 +5,19 @@ import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import rateLimit from 'express-rate-limit';
+import cors from 'cors';
+import path from 'path';
+
 import { audioUpload } from './middleware/audioUpload.middleware.js';
 import { VoiceController } from './controllers/voice.controller.js';
-
 import { AuthController } from './controllers/auth.controller.js';
 import { StudentController } from './controllers/student.controller.js';
 import { ChatController } from './controllers/chat.controller.js';
 import { DocumentController } from './controllers/document.controller.js';
 import { uploadPdf } from './middlewares/upload.middleware.js';
 import { RagController } from './controllers/rag.controller.js';
+import { PrismaClient } from '@prisma/client';
+const prisma = new PrismaClient();
 
 const app = express();
 const ragController = new RagController();
@@ -23,13 +27,21 @@ if (!JWT_SECRET) {
   throw new Error('FATAL ERROR: JWT_SECRET is not defined in environment variables.');
 }
 
+// 1. ENABLE CORS FOR FRONTEND UI (React / Vite)
+app.use(cors());
+
+// 2. PARSE JSON REQUEST BODIES
 app.use(express.json());
+
+// 3. SERVE STATIC AUDIO FILES (Allows browser to stream generated answer .mp3 files)
+app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
 
 const authController = new AuthController();
 const studentController = new StudentController();
 const chatController = new ChatController();
 const documentController = new DocumentController();
 const voiceController = new VoiceController();
+
 // RATE LIMITER
 const chatRateLimiter = rateLimit({
   windowMs: 1 * 60 * 1000,
@@ -106,7 +118,39 @@ app.post('/documents/upload', authenticateToken, uploadPdf.single('file'), (req,
 app.post('/ai/chat-rag', authenticateToken, (req, res) =>
   ragController.askQuestion(req, res)
 );
+
+// INSPECT DOCUMENT CHUNKS IN POSTMAN / BROWSER
+app.get('/api/chunks', async (req, res) => {
+  try {
+    const documentId = req.query.documentId ? Number(req.query.documentId) : undefined;
+
+    const chunks = await prisma.documentChunk.findMany({
+      where: documentId ? { documentId } : {},
+      orderBy: { chunkIndex: 'asc' },
+      take: 50,
+      select: {
+        id: true,
+        documentId: true,
+        chunkIndex: true,
+        content: true,
+      },
+    });
+
+    res.status(200).json({
+      success: true,
+      count: chunks.length,
+      chunks,
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error?.message || 'Failed to fetch document chunks' });
+  }
+});
+
+// RAG VOICE ASSISTANT ROUTES (Supports both 'file' and 'audio' field names + aliases)
 app.post('/ai/voice-upload', authenticateToken, audioUpload.single('audio'), (req, res) =>
+  voiceController.handleAudioUpload(req, res)
+);
+app.post('/voice/upload', authenticateToken, audioUpload.single('file'), (req, res) =>
   voiceController.handleAudioUpload(req, res)
 );
 
@@ -120,4 +164,5 @@ const server = app.listen(PORT, () => {
   console.log(`🚀 Server listening on http://localhost:${PORT}`);
 });
 
+// Explicit 2-minute timeout for multi-stage voice and LLM processing
 server.timeout = 120000;

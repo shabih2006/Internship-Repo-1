@@ -4,57 +4,62 @@ export interface TextChunk {
 }
 
 export class TextChunker {
-  private chunkSize: number;
-  private chunkOverlap: number;
+  private targetChunkSize: number;
 
-  constructor(chunkSize: number = 500, chunkOverlap: number = 100) {
-    this.chunkSize = chunkSize;
-    this.chunkOverlap = chunkOverlap;
+  constructor(targetChunkSize: number = 500) {
+    this.targetChunkSize = targetChunkSize;
   }
 
   public chunkText(text: string): TextChunk[] {
+    // Clean whitespace
     const cleanedText = text.replace(/\s+/g, ' ').trim();
     if (!cleanedText) return [];
 
+    // Split strictly by sentence boundaries (. ! ?)
+    const sentenceRegex = /[^.!?]+[.!?]+(\s+|$)|[^.!?]+$/g;
+    const sentences = cleanedText.match(sentenceRegex) || [cleanedText];
+
     const chunks: TextChunk[] = [];
-    let start = 0;
+    let currentChunkSentences: string[] = [];
+    let currentLength = 0;
     let chunkIndex = 0;
 
-    while (start < cleanedText.length) {
-      let end = Math.min(start + this.chunkSize, cleanedText.length);
+    for (const rawSentence of sentences) {
+      const sentence = rawSentence.trim();
+      // Skip meaningless numbers / isolated bullet artifacts
+      if (!sentence || /^\d+$/.test(sentence) || sentence.length < 5) continue;
 
-      // Align end boundary to nearest word boundary
-      if (end < cleanedText.length) {
-        const lastSpace = cleanedText.lastIndexOf(' ', end);
-        if (lastSpace > start) {
-          end = lastSpace;
+      currentChunkSentences.push(sentence);
+      currentLength += sentence.length + 1;
+
+      if (currentLength >= this.targetChunkSize) {
+        let chunkContent = currentChunkSentences.join(' ').trim();
+
+        if (!/[.!?]$/.test(chunkContent)) {
+          chunkContent += '.';
         }
-      }
 
-      const chunkText = cleanedText.slice(start, end).trim();
-
-      if (chunkText.length > 0) {
         chunks.push({
           chunkIndex,
-          content: chunkText,
+          content: chunkContent,
         });
+
         chunkIndex++;
+        currentChunkSentences = [];
+        currentLength = 0;
+      }
+    }
+
+    if (currentChunkSentences.length > 0) {
+      let finalContent = currentChunkSentences.join(' ').trim();
+      if (!/[.!?]$/.test(finalContent)) {
+        finalContent += '.';
       }
 
-      if (end === cleanedText.length) break;
-
-      // Move forward while respecting overlap and word boundary
-      let nextStart = end - this.chunkOverlap;
-      if (nextStart > start) {
-        const spaceIndex = cleanedText.indexOf(' ', nextStart);
-        if (spaceIndex !== -1 && spaceIndex < end) {
-          nextStart = spaceIndex + 1;
-        }
-      } else {
-        nextStart = end;
-      }
-
-      start = nextStart;
+      chunks.push({
+        chunkIndex,
+        content: finalContent,
+      });
     }
 
     return chunks;

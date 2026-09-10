@@ -72,7 +72,7 @@ export class LiveAIService implements IAIService {
         top_p: 1,
         stream: false,
       });
-
+      const SYSTEM_PROMPT = promptConfig.SYSTEM_PROMPT;
       const reply = response.choices[0]?.message?.content?.trim();
 
       if (!reply) {
