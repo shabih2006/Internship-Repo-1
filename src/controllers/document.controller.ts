@@ -3,7 +3,6 @@ import fs from 'fs';
 // @ts-ignore
 import pdfParseModule from 'pdf-parse-fixed';
 import { PrismaClient } from '@prisma/client';
-import { TextChunker } from '../utils/chunker.util.js';
 import { embeddingService } from '../services/embedding.service.js';
 import { similarityService } from '../services/similarity.service.js';
 
@@ -11,7 +10,50 @@ import { similarityService } from '../services/similarity.service.js';
 const pdfParse = (pdfParseModule as any)?.default || pdfParseModule;
 
 const prisma = new PrismaClient();
-const chunker = new TextChunker(500);
+
+// 1. SANITIZE RAW PDF TEXT (Fixes merged words and missing spaces)
+function cleanExtractedText(rawText: string): string {
+  return rawText
+    // Fix concatenated camelCase words missing spaces (e.g. "oneStaffMember" -> "one Staff Member")
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    // Fix missing spaces after punctuation and bullets (e.g. "binary. •A" -> "binary. • A")
+    .replace(/([.:;?!])([a-zA-Z•*-])/g, '$1 $2')
+    // Convert multiple newlines, tabs, and special spaces into single spaces
+    .replace(/[\r\n\t]+/g, ' ')
+    // Collapse multiple consecutive spaces into a single space
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// 2. SENTENCE-AWARE CHUNKING ALGORITHM
+function chunkTextBySentences(text: string, maxChunkSize = 500): { chunkIndex: number; content: string }[] {
+  const cleaned = cleanExtractedText(text);
+
+  // Split text into full sentences or bullet points
+  const sentences = cleaned.match(/[^.!?•]+[.!?•]+/g) || [cleaned];
+
+  const chunkObjects: { chunkIndex: number; content: string }[] = [];
+  let currentChunk = '';
+  let chunkIndex = 0;
+
+  for (const sentence of sentences) {
+    if ((currentChunk + sentence).length > maxChunkSize) {
+      if (currentChunk.trim()) {
+        chunkObjects.push({ chunkIndex, content: currentChunk.trim() });
+        chunkIndex++;
+      }
+      currentChunk = sentence;
+    } else {
+      currentChunk += ' ' + sentence;
+    }
+  }
+
+  if (currentChunk.trim()) {
+    chunkObjects.push({ chunkIndex, content: currentChunk.trim() });
+  }
+
+  return chunkObjects;
+}
 
 export class DocumentController {
   async uploadDocument(req: Request, res: Response): Promise<void> {
@@ -26,15 +68,15 @@ export class DocumentController {
       // 1. Read and parse PDF text content safely
       const dataBuffer = fs.readFileSync(uploadedFilePath);
       const pdfData = await pdfParse(dataBuffer);
-      const extractedText = pdfData.text ? pdfData.text.trim() : '';
+      const rawExtractedText = pdfData.text ? pdfData.text.trim() : '';
 
-      if (!extractedText) {
+      if (!rawExtractedText) {
         res.status(400).json({ error: 'Extracted PDF contains no readable text.' });
         return;
       }
 
-      // 2. Chunk text
-      const chunks = chunker.chunkText(extractedText);
+      // 2. Clean text and chunk by complete sentences
+      const chunks = chunkTextBySentences(rawExtractedText, 500);
 
       // 3. Store Parent Document in DB
       const document = await prisma.document.create({
@@ -65,7 +107,7 @@ export class DocumentController {
 
       res.status(201).json({
         success: true,
-        message: 'PDF uploaded, chunked, and embedded successfully! 🚀',
+        message: 'PDF uploaded, cleanly chunked, and embedded successfully! 🚀',
         document,
         storedChunksCount: chunkData.length,
       });
@@ -73,7 +115,7 @@ export class DocumentController {
       console.error('[Document Processing Error]:', error);
       res.status(500).json({ error: error?.message || 'Failed to process document.' });
     } finally {
-      // 6. Cleanup temporary uploaded file from disk if necessary
+      // 6. Cleanup temporary uploaded file from disk
       if (uploadedFilePath && fs.existsSync(uploadedFilePath)) {
         try {
           fs.unlinkSync(uploadedFilePath);

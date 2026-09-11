@@ -104,6 +104,11 @@ const authorizeRoles = (...allowedRoles: string[]) => {
 app.post('/api/chat', (req, res) => chatController.handleChat(req, res));
 app.post('/api/chat-rag', (req, res) => chatController.handleChat(req, res));
 
+// NEW: PUBLIC DOCUMENT UPLOAD ENDPOINT FOR REACT FRONTEND
+app.post('/api/upload', uploadPdf.single('document'), (req, res) =>
+  documentController.uploadDocument(req, res)
+);
+
 // AUTHENTICATION ROUTES
 app.post('/auth/register', (req, res) => authController.register(req, res));
 app.post('/auth/login', (req, res) => authController.login(req, res));
@@ -130,7 +135,7 @@ app.put('/chat/preferences', authenticateToken, (req, res) =>
   chatController.updatePreferences(req, res)
 );
 
-// RAG DOCUMENT ROUTES
+// RAG DOCUMENT ROUTES (AUTHENTICATED)
 app.post('/documents/upload', authenticateToken, uploadPdf.single('file'), (req, res) =>
   documentController.uploadDocument(req, res)
 );

@@ -9,15 +9,14 @@ export class LiveAIService implements IAIService {
 
   constructor() {
     this.chatRepository = new ChatRepository();
-    
-    // Initialize Groq client if API key is present
+
     const apiKey = process.env.GROQ_API_KEY?.trim();
     if (apiKey && apiKey !== 'your_groq_api_key' && apiKey !== 'placeholder') {
       this.groqClient = new Groq({ apiKey });
     }
   }
 
-  async generateResponse(studentId: number, prompt: string): Promise<string> {
+  async generateResponse(studentId: number, prompt: string, targetLanguage: string = 'English'): Promise<string> {
     const apiKey = process.env.GROQ_API_KEY?.trim();
 
     if (!apiKey || apiKey === 'your_groq_api_key' || apiKey === 'placeholder') {
@@ -25,12 +24,11 @@ export class LiveAIService implements IAIService {
       return "Groq API key is missing or invalid in your backend .env file! 🔑";
     }
 
-    // Lazy initialization backup in case env vars loaded after constructor
     if (!this.groqClient) {
       this.groqClient = new Groq({ apiKey });
     }
 
-    // 1. Save user turn to DB safely
+    // 1. Save user turn to DB
     try {
       await this.chatRepository.saveConversation(studentId, 'user', prompt);
     } catch (dbErr) {
@@ -42,21 +40,21 @@ export class LiveAIService implements IAIService {
     try {
       const prefs = await this.chatRepository.getUserPreference(studentId);
       if (prefs) {
-        preferenceInstruction = `\nUSER PREFERENCES:\n- Preferred Language: ${prefs.preferredLanguage}\n- Learning Style: ${prefs.learningStyle}\nAlways respond using the user's preferred language and learning style.`;
+        preferenceInstruction = `Learning Style: ${prefs.learningStyle || 'Standard'}.`;
       }
     } catch (prefErr) {
       console.warn('[Preference Warning]: Could not load preferences:', prefErr);
     }
 
-    // 3. Inject system prompt & user preferences into history payload
-    const MAX_HISTORY_TURNS = 10;
+    // 3. Strict System Prompt
+    const strictSystemPrompt = `${SYSTEM_PROMPT}\n${preferenceInstruction}\n\n[SYSTEM MANDATE]: You are a multi-lingual AI assistant. You MUST respond ONLY in ${targetLanguage}. Do not write in English unless ${targetLanguage} is English.`;
+
     const historyMessages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
-      { role: 'system', content: `${SYSTEM_PROMPT}${preferenceInstruction}` },
+      { role: 'system', content: strictSystemPrompt },
     ];
 
     try {
-      const recentHistory = await this.chatRepository.getRecentConversations(studentId, MAX_HISTORY_TURNS);
-
+      const recentHistory = await this.chatRepository.getRecentConversations(studentId, 6);
       recentHistory.forEach((c) => {
         historyMessages.push({
           role: c.role === 'user' ? 'user' : 'assistant',
@@ -67,21 +65,16 @@ export class LiveAIService implements IAIService {
       console.warn('[History Warning]: Proceeding without past history window:', historyErr);
     }
 
-    // Append the CURRENT prompt so Groq actually receives it!
-    historyMessages.push({ role: 'user', content: prompt });
+    // 4. WRAP THE PROMPT WITH AN IMMEDIATE TRANSLATION COMMAND
+    const languageEnforcedPrompt = `${prompt}\n\n(IMPORTANT: Translate your entire reply into ${targetLanguage} native script. Do NOT output any English text!)`;
 
-    // Context Window Verification Log
-    console.log('\n=============================================');
-    console.log('--- CONTEXT WINDOW TRUNCATION CHECK ---');
-    console.log(`Total messages sent in payload: ${historyMessages.length}`);
-    console.log('=============================================\n');
+    historyMessages.push({ role: 'user', content: languageEnforcedPrompt });
 
-    // 4. Request completion from Groq
     try {
       const response = await this.groqClient.chat.completions.create({
         model: process.env.GROQ_MODEL || 'llama-3.3-70b-versatile',
         messages: historyMessages,
-        temperature: 0.7,
+        temperature: 0.1, // Very low temperature prevents ignoring system instructions
         max_completion_tokens: 1024,
         top_p: 1,
         stream: false,
@@ -93,7 +86,6 @@ export class LiveAIService implements IAIService {
         throw new Error('Groq returned an empty response choices array.');
       }
 
-      // 5. Save model turn to DB safely
       try {
         await this.chatRepository.saveConversation(studentId, 'model', reply);
       } catch (dbErr) {
@@ -103,7 +95,7 @@ export class LiveAIService implements IAIService {
       return reply;
     } catch (error: any) {
       console.error('[Groq API Error]:', error?.message || error);
-      return `Groq Error: ${error?.message || "I couldn't process that request right now. Please try again in a moment! 🙈"}`;
+      return `Groq Error: ${error?.message || "I couldn't process that request right now. Please try again! 🙈"}`;
     }
   }
 }

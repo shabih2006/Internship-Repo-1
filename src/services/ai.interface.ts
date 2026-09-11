@@ -1,3 +1,3 @@
 export interface IAIService {
-  generateResponse(studentId: number, prompt: string): Promise<string>;
+  generateResponse(studentId: number, prompt: string, targetLanguage?: string): Promise<string>;
 }
