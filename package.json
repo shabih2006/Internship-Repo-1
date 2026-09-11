@@ -3,7 +3,10 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "build": "tsc",
+    "dev": "vite",
+    "server": "tsx src/app-db.ts",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
     "postinstall": "prisma skills sync || exit 0"
   },
   "dependencies": {
@@ -25,6 +28,7 @@
     "groq-sdk": "^0.13.0",
     "gtts": "^0.2.1",
     "jsonwebtoken": "^9.0.3",
+    "katex": "^0.18.7",
     "lucide-react": "^1.43.0",
     "multer": "^2.3.0",
     "pdf-parse": "^2.4.5",
@@ -32,6 +36,9 @@
     "pg": "^8.23.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
+    "react-markdown": "^10.1.0",
+    "rehype-katex": "^7.0.1",
+    "remark-math": "^6.0.0",
     "zod": "^4.5.4"
   },
   "devDependencies": {

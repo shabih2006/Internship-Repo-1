@@ -17,23 +17,26 @@ import { DocumentController } from './controllers/document.controller.js';
 import { uploadPdf } from './middlewares/upload.middleware.js';
 import { RagController } from './controllers/rag.controller.js';
 import { PrismaClient } from '@prisma/client';
+
 const prisma = new PrismaClient();
-
 const app = express();
-const ragController = new RagController();
 
-const JWT_SECRET = process.env.JWT_SECRET;
-if (!JWT_SECRET) {
-  throw new Error('FATAL ERROR: JWT_SECRET is not defined in environment variables.');
-}
+const JWT_SECRET = process.env.JWT_SECRET || 'fallback_development_secret_key';
 
 // 1. ENABLE CORS FOR FRONTEND UI (React / Vite)
-app.use(cors());
+app.use(
+  cors({
+    origin: true, // Allow all local development origins
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+  })
+);
 
 // 2. PARSE JSON REQUEST BODIES
 app.use(express.json());
 
-// 3. SERVE STATIC AUDIO FILES (Allows browser to stream generated answer .mp3 files)
+// 3. SERVE STATIC AUDIO FILES
 app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
 
 const authController = new AuthController();
@@ -41,11 +44,12 @@ const studentController = new StudentController();
 const chatController = new ChatController();
 const documentController = new DocumentController();
 const voiceController = new VoiceController();
+const ragController = new RagController();
 
-// RATE LIMITER
+// RATE LIMITER FOR AUTHENTICATED CHAT
 const chatRateLimiter = rateLimit({
   windowMs: 1 * 60 * 1000,
-  max: 5,
+  max: 30, // Increased threshold for active testing
   message: {
     success: false,
     error: 'Too many chat requests from this IP. Please wait a minute before trying again.',
@@ -94,32 +98,45 @@ const authorizeRoles = (...allowedRoles: string[]) => {
   };
 };
 
-// ROUTE DEFINITIONS
+// ==========================================
+// UNAUTHENTICATED PUBLIC ROUTES (For React Chat UI)
+// ==========================================
+app.post('/api/chat', (req, res) => chatController.handleChat(req, res));
+app.post('/api/chat-rag', (req, res) => chatController.handleChat(req, res));
+
+// AUTHENTICATION ROUTES
 app.post('/auth/register', (req, res) => authController.register(req, res));
 app.post('/auth/login', (req, res) => authController.login(req, res));
+
+// DOCUMENT SEARCH ROUTES
 app.post('/documents/search', authenticateToken, (req, res) =>
   documentController.searchDocuments(req, res)
 );
 
+// STUDENT MANAGEMENT ROUTES
 app.get('/students', authenticateToken, (req, res) => studentController.getAll(req, res));
 app.get('/students/:id', authenticateToken, (req, res) => studentController.getById(req, res));
 app.post('/students', authenticateToken, (req, res) => studentController.create(req, res));
-app.delete('/students/:id', authenticateToken, authorizeRoles('ADMIN'), (req, res) => studentController.delete(req, res));
+app.delete('/students/:id', authenticateToken, authorizeRoles('ADMIN'), (req, res) =>
+  studentController.delete(req, res)
+);
 
-// AI CHATBOT ROUTES
-app.post('/chat', chatRateLimiter, authenticateToken, (req, res) => chatController.handleChat(req, res));
+// AUTHENTICATED AI CHATBOT ROUTES
+app.post('/chat', chatRateLimiter, authenticateToken, (req, res) =>
+  chatController.handleChat(req, res)
+);
 app.get('/chat/history', authenticateToken, (req, res) => chatController.getHistory(req, res));
-app.put('/chat/preferences', authenticateToken, (req, res) => chatController.updatePreferences(req, res));
+app.put('/chat/preferences', authenticateToken, (req, res) =>
+  chatController.updatePreferences(req, res)
+);
 
 // RAG DOCUMENT ROUTES
 app.post('/documents/upload', authenticateToken, uploadPdf.single('file'), (req, res) =>
   documentController.uploadDocument(req, res)
 );
-app.post('/ai/chat-rag', authenticateToken, (req, res) =>
-  ragController.askQuestion(req, res)
-);
+app.post('/ai/chat-rag', authenticateToken, (req, res) => ragController.askQuestion(req, res));
 
-// INSPECT DOCUMENT CHUNKS IN POSTMAN / BROWSER
+// INSPECT DOCUMENT CHUNKS
 app.get('/api/chunks', async (req, res) => {
   try {
     const documentId = req.query.documentId ? Number(req.query.documentId) : undefined;
@@ -146,7 +163,7 @@ app.get('/api/chunks', async (req, res) => {
   }
 });
 
-// RAG VOICE ASSISTANT ROUTES (Supports both 'file' and 'audio' field names + aliases)
+// RAG VOICE ASSISTANT ROUTES
 app.post('/ai/voice-upload', authenticateToken, audioUpload.single('audio'), (req, res) =>
   voiceController.handleAudioUpload(req, res)
 );
@@ -164,5 +181,5 @@ const server = app.listen(PORT, () => {
   console.log(`🚀 Server listening on http://localhost:${PORT}`);
 });
 
-// Explicit 2-minute timeout for multi-stage voice and LLM processing
+// Timeout extension for voice & LLM generation pipelines
 server.timeout = 120000;

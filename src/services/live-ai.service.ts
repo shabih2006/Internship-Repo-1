@@ -5,23 +5,36 @@ import { type IAIService } from './ai.interface.js';
 
 export class LiveAIService implements IAIService {
   private chatRepository: ChatRepository;
+  private groqClient: Groq | null = null;
 
   constructor() {
     this.chatRepository = new ChatRepository();
+    
+    // Initialize Groq client if API key is present
+    const apiKey = process.env.GROQ_API_KEY?.trim();
+    if (apiKey && apiKey !== 'your_groq_api_key' && apiKey !== 'placeholder') {
+      this.groqClient = new Groq({ apiKey });
+    }
   }
 
   async generateResponse(studentId: number, prompt: string): Promise<string> {
     const apiKey = process.env.GROQ_API_KEY?.trim();
 
     if (!apiKey || apiKey === 'your_groq_api_key' || apiKey === 'placeholder') {
-      throw new Error('GROQ_API_KEY is missing or invalid.');
+      console.error('[Groq Error]: Missing or invalid GROQ_API_KEY in environment variables.');
+      return "Groq API key is missing or invalid in your backend .env file! 🔑";
     }
 
-    // 1. Save user turn to DB
+    // Lazy initialization backup in case env vars loaded after constructor
+    if (!this.groqClient) {
+      this.groqClient = new Groq({ apiKey });
+    }
+
+    // 1. Save user turn to DB safely
     try {
       await this.chatRepository.saveConversation(studentId, 'user', prompt);
     } catch (dbErr) {
-      console.error('[DB Log Error]: Failed to log user prompt:', dbErr);
+      console.warn('[DB Warning]: Failed to log user prompt:', dbErr);
     }
 
     // 2. Fetch User Preferences
@@ -35,9 +48,9 @@ export class LiveAIService implements IAIService {
       console.warn('[Preference Warning]: Could not load preferences:', prefErr);
     }
 
-    // 3. Inject history window into prompt with truncation (MAX 10 TURNS)
+    // 3. Inject system prompt & user preferences into history payload
     const MAX_HISTORY_TURNS = 10;
-    let historyMessages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
+    const historyMessages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
       { role: 'system', content: `${SYSTEM_PROMPT}${preferenceInstruction}` },
     ];
 
@@ -52,19 +65,20 @@ export class LiveAIService implements IAIService {
       });
     } catch (historyErr) {
       console.warn('[History Warning]: Proceeding without past history window:', historyErr);
-      historyMessages.push({ role: 'user', content: prompt });
     }
 
-    // CLEAN LOG FOR ITEM 3 VERIFICATION
+    // Append the CURRENT prompt so Groq actually receives it!
+    historyMessages.push({ role: 'user', content: prompt });
+
+    // Context Window Verification Log
     console.log('\n=============================================');
-    console.log('--- ITEM 3: CONTEXT WINDOW TRUNCATION CHECK ---');
+    console.log('--- CONTEXT WINDOW TRUNCATION CHECK ---');
     console.log(`Total messages sent in payload: ${historyMessages.length}`);
     console.log('=============================================\n');
 
-    // 4. Send request to Groq SDK
+    // 4. Request completion from Groq
     try {
-      const groq = new Groq({ apiKey });
-      const response = await groq.chat.completions.create({
+      const response = await this.groqClient.chat.completions.create({
         model: process.env.GROQ_MODEL || 'llama-3.3-70b-versatile',
         messages: historyMessages,
         temperature: 0.7,
@@ -72,24 +86,24 @@ export class LiveAIService implements IAIService {
         top_p: 1,
         stream: false,
       });
-      const SYSTEM_PROMPT = promptConfig.SYSTEM_PROMPT;
+
       const reply = response.choices[0]?.message?.content?.trim();
 
       if (!reply) {
-        throw new Error('Groq returned an empty response.');
+        throw new Error('Groq returned an empty response choices array.');
       }
 
-      // 5. Save model turn to DB
+      // 5. Save model turn to DB safely
       try {
         await this.chatRepository.saveConversation(studentId, 'model', reply);
       } catch (dbErr) {
-        console.error('[DB Log Error]: Failed to log model reply:', dbErr);
+        console.warn('[DB Warning]: Failed to log model reply:', dbErr);
       }
 
       return reply;
     } catch (error: any) {
       console.error('[Groq API Error]:', error?.message || error);
-      return "Oops! I couldn't process that request right now. Please try again in a moment!";
+      return `Groq Error: ${error?.message || "I couldn't process that request right now. Please try again in a moment! 🙈"}`;
     }
   }
 }
