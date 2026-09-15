@@ -1,8 +1,10 @@
 import { Request, Response } from 'express';
 import { LiveAIService } from '../services/live-ai.service.js';
+import { ChatRepository } from '../repositories/chat.repository.js';
 import { similarityService } from '../services/similarity.service.js';
 
 const liveAIService = new LiveAIService();
+const chatRepository = new ChatRepository();
 
 const LANGUAGE_MAP: Record<string, string> = {
   'en-US': 'English',
@@ -65,6 +67,39 @@ export class ChatController {
     } catch (error: any) {
       console.error('[Chat Controller Error]:', error);
       res.status(500).json({ error: error?.message || 'Failed to process request.' });
+    }
+  }
+
+  async getHistory(req: Request, res: Response): Promise<void> {
+    try {
+      const studentId = Number(req.query.studentId || 1);
+      const history = await chatRepository.getAllConversations(studentId);
+      res.status(200).json({ success: true, history });
+    } catch (error: any) {
+      console.error('[Chat History Error]:', error);
+      res.status(500).json({ error: error?.message || 'Failed to retrieve chat history.' });
+    }
+  }
+
+  async updatePreferences(req: Request, res: Response): Promise<void> {
+    try {
+      const studentId = Number(req.body.studentId || 1);
+      const { preferredLanguage, learningStyle = 'Detailed' } = req.body;
+
+      if (!preferredLanguage || typeof preferredLanguage !== 'string') {
+        res.status(400).json({ error: 'preferredLanguage is required.' });
+        return;
+      }
+
+      const preference = await chatRepository.updateUserPreference(
+        studentId,
+        preferredLanguage,
+        learningStyle
+      );
+      res.status(200).json({ success: true, preference });
+    } catch (error: any) {
+      console.error('[Chat Preferences Error]:', error);
+      res.status(500).json({ error: error?.message || 'Failed to update preferences.' });
     }
   }
 }

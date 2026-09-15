@@ -1,6 +1,32 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkBreaks from 'remark-breaks';
+
+// --- Web Speech API Interfaces ---
+interface SpeechRecognitionEvent {
+  resultIndex: number;
+  results: {
+    [index: number]: {
+      [index: number]: {
+        transcript: string;
+      };
+    };
+    length: number;
+  };
+}
+
+interface SpeechRecognitionInstance {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  onstart: () => void;
+  onresult: (event: SpeechRecognitionEvent) => void;
+  onerror: () => void;
+  onend: () => void;
+  start: () => void;
+  stop: () => void;
+}
 
 interface Message {
   id: string;
@@ -21,6 +47,20 @@ interface DocumentChunk {
   documentId: number;
   chunkIndex: number;
   content: string;
+}
+
+interface ExtractedTextBlock {
+  id: string;
+  text: string;
+}
+
+interface DocumentPreviewData {
+  id: number;
+  fileName: string;
+  fileUrl: string;
+  markdownUrl?: string;
+  extractedBlocks: ExtractedTextBlock[];
+  fullExtractedText?: string;
 }
 
 export interface ThemeColors {
@@ -52,7 +92,7 @@ export interface ThemeColors {
 export interface PalettePreset {
   id: string;
   name: string;
-  effect?: 'leaves' | 'snow' | 'rain' | 'flowers' | 'berry';
+  effect?: 'leaves' | 'snow' | 'rain' | 'flowers' | 'berry' | 'taylor';
   dark: ThemeColors;
   light: ThemeColors;
 }
@@ -68,7 +108,61 @@ const SUPPORTED_LANGUAGES = [
 ];
 
 const PALETTES: Record<string, PalettePreset> = {
-  // --- SPECIAL & SEASONAL THEMES ---
+  taylor: {
+    id: 'taylor',
+    name: '✨ Taylor Swift (Eras)',
+    effect: 'taylor',
+    dark: {
+      titleText: "What's Up Swiftie",
+      titleFont: "'Georgia', 'Palatino', serif",
+      bgApp: '#080414',
+      bgSidebar: '#100a21',
+      sidebarBorder: '#3c5e42',
+      sidebarText: '#e2d9cc',
+      sidebarTitle: '#c084fc',
+      activeSessionBg: '#1f1338',
+      activeSessionBorder: '#3c5e42',
+      activeSessionText: '#ffffff',
+      newChatBtn: '#3c5e42',
+      newChatBtnText: '#ffffff',
+      mainTitle: '#e2d9cc',
+      chatBoxBg: 'rgba(16, 10, 33, 0.88)',
+      chatBoxBorder: '#3c5e42',
+      userBubbleBg: '#4c1d95',
+      userBubbleText: '#ffffff',
+      assistantBubbleBg: '#130d24',
+      assistantBubbleText: '#e2d9cc',
+      voiceBtnBg: '#3c5e42',
+      voiceBtnText: '#ffffff',
+      sendBtnBg: '#6b21a8',
+      sendBtnText: '#ffffff',
+    },
+    light: {
+      titleText: "What's Up Swiftie",
+      titleFont: "'Georgia', 'Palatino', serif",
+      bgApp: '#fce7f3',
+      bgSidebar: '#fbcfe8',
+      sidebarBorder: '#f472b6',
+      sidebarText: '#991b1b',
+      sidebarTitle: '#831843',
+      activeSessionBg: '#e0f2fe',
+      activeSessionBorder: '#0284c7',
+      activeSessionText: '#0369a1',
+      newChatBtn: '#dc2626',
+      newChatBtnText: '#ffffff',
+      mainTitle: '#991b1b',
+      chatBoxBg: 'rgba(255, 255, 255, 0.85)',
+      chatBoxBorder: '#f472b6',
+      userBubbleBg: '#dc2626',
+      userBubbleText: '#ffffff',
+      assistantBubbleBg: '#f0f9ff',
+      assistantBubbleText: '#0f172a',
+      voiceBtnBg: '#eab308',
+      voiceBtnText: '#422006',
+      sendBtnBg: '#15803d',
+      sendBtnText: '#ffffff',
+    },
+  },
   berry: {
     id: 'berry',
     name: '🍇 Bold Berry',
@@ -739,8 +833,246 @@ const BerrySVGIcon: React.FC<{ type: number; size: number }> = ({ type, size }) 
   }
 };
 
-const SeasonalParticles: React.FC<{ effect?: string }> = ({ effect }) => {
+const AnimatedFlappingSeagull: React.FC<{ size: number; duration: number }> = ({ size, duration }) => {
+  return (
+    <svg width={size * 1.6} height={size} viewBox="0 0 50 30" fill="none" style={{ overflow: 'visible' }}>
+      <path
+        d="M25 18 C 18 8, 8 2, 2 10 C 10 14, 18 16, 25 18 Z"
+        fill="#0284c7"
+        opacity="0.85"
+        style={{
+          transformOrigin: '25px 18px',
+          animation: `wingFlapLeft ${duration}s ease-in-out infinite alternate`,
+        }}
+      />
+      <path
+        d="M25 18 C 32 8, 42 2, 48 10 C 40 14, 32 16, 25 18 Z"
+        fill="#0284c7"
+        opacity="0.85"
+        style={{
+          transformOrigin: '25px 18px',
+          animation: `wingFlapRight ${duration}s ease-in-out infinite alternate`,
+        }}
+      />
+      <ellipse cx="25" cy="18" rx="3" ry="1.5" fill="#0369a1" />
+    </svg>
+  );
+};
+
+const TaylorEraSVG: React.FC<{ era: number; size: number }> = ({ era, size }) => {
+  switch (era) {
+    case 0:
+      return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="1.8" strokeLinecap="round">
+          <path d="M7 3v9a3 3 0 003 3h5l4 3v3H4V3h3z" fill="#15803d" />
+        </svg>
+      );
+    case 1:
+      return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="#eab308">
+          <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" />
+        </svg>
+      );
+    case 2:
+      return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="#a855f7">
+          <path d="M12 2l2.4 7.2H22l-6 4.8 2.4 7.2-6.4-4.8-6.4 4.8 2.4-7.2-6-4.8h7.6z" />
+        </svg>
+      );
+    case 3:
+      return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="2.5" strokeLinecap="round">
+          <path d="M5 8c0-2 3-3 7-3s7 1 7 3v4c0 2-3 3-7 3S5 14 5 12V8z" />
+          <path d="M12 15v6M15 15v4" />
+        </svg>
+      );
+    case 4:
+      return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="#38bdf8" strokeWidth="2" strokeLinecap="round">
+          <path d="M2 12C6 12 9 7 12 12C15 7 18 12 22 12" />
+        </svg>
+      );
+    case 5:
+      return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+          <path d="M12 3C8 3 5 5 5 8C5 11 8 12 12 13C16 14 19 15 19 18C19 21 15 22 11 22C7 22 4 20 4 17" stroke="#4a7c59" strokeWidth="2.2" strokeLinecap="round" />
+          <circle cx="18" cy="5" r="1.2" fill="#ef4444" />
+        </svg>
+      );
+    case 6:
+      return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="url(#loverHeart)">
+          <defs>
+            <linearGradient id="loverHeart" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stopColor="#f472b6" />
+              <stop offset="100%" stopColor="#38bdf8" />
+            </linearGradient>
+          </defs>
+          <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" />
+        </svg>
+      );
+    case 7:
+      return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="#9ca3af">
+          <path d="M12 2L4 12h3l-4 8h18l-4-8h3L12 2z" />
+        </svg>
+      );
+    case 8:
+      return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="#d97706">
+          <path d="M17 2C10 2 4 8 4 15c0 4 3 7 7 7 7 0 11-8 11-15 0-2-2-5-5-5z" />
+        </svg>
+      );
+    case 9:
+      return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="#fef08a">
+          <path d="M12 3c.132 0 .263 0 .393 0a7.5 7.5 0 0 0 7.92 12.446A9 9 0 1 1 12 2.992z" />
+          <path d="M19 3l1 2 2 1-2 1-1 2-1-2-2-1 2-1z" fill="#facc15" />
+        </svg>
+      );
+    case 10:
+    default:
+      return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="#e9d5ff" strokeWidth="1.8">
+          <path d="M12 2L19 9L15 22H9L5 9L12 2Z" strokeLinejoin="round" />
+          <circle cx="12" cy="11" r="1.5" fill="#e9d5ff" />
+          <path d="M12 12.5V22" />
+        </svg>
+      );
+  }
+};
+
+const SeasonalParticles: React.FC<{ effect?: string; mode?: 'dark' | 'light' }> = ({ effect, mode = 'dark' }) => {
+  const isLightMode = mode === 'light';
+
+  const particleData = useMemo(() => {
+    return Array.from({ length: 22 }).map((_, i) => ({
+      id: i,
+      left: Math.random() * 100,
+      duration: 6 + Math.random() * 8,
+      delay: Math.random() * 5,
+      size: 22 + Math.random() * 14,
+      eraType: i % 11,
+      iconType: i % 6,
+    }));
+  }, []);
+
   if (!effect) return null;
+
+  if (effect === 'taylor') {
+    const clouds = Array.from({ length: 6 });
+    const flyingSeagulls = Array.from({ length: 7 });
+
+    return (
+      <div style={{ position: 'absolute', inset: 0, overflow: 'hidden', pointerEvents: 'none', zIndex: 0 }}>
+        <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 1 }}>
+          {clouds.map((_, i) => {
+            const width = 360 + i * 100;
+            const height = 160 + i * 40;
+            const top = (i * 16) % 80;
+            const left = (i * 22 - 15) % 90;
+            const duration = 20 + i * 5;
+
+            const cloudColor = isLightMode
+              ? i % 2 === 0
+                ? 'rgba(244, 114, 182, 0.55)'
+                : 'rgba(56, 189, 248, 0.55)'
+              : i % 2 === 0
+                ? 'rgba(60, 94, 66, 0.45)'
+                : 'rgba(30, 58, 38, 0.55)';
+
+            return (
+              <div
+                key={`taylor-cloud-${i}`}
+                style={{
+                  position: 'absolute',
+                  top: `${top}%`,
+                  left: `${left}%`,
+                  width: `${width}px`,
+                  height: `${height}px`,
+                  backgroundColor: cloudColor,
+                  borderRadius: '50%',
+                  filter: 'blur(45px)',
+                  animation: `cloudFlow ${duration}s ease-in-out infinite alternate`,
+                }}
+              />
+            );
+          })}
+        </div>
+
+        {isLightMode &&
+          flyingSeagulls.map((_, i) => {
+            const top = 8 + i * 11;
+            const flyDuration = 14 + i * 4;
+            const flapSpeed = 0.35 + (i % 3) * 0.15;
+            const delay = i * 2.2;
+            const size = 26 + (i % 3) * 8;
+
+            return (
+              <div
+                key={`flying-seagull-${i}`}
+                style={{
+                  position: 'absolute',
+                  top: `${top}%`,
+                  left: '-15%',
+                  animation: `glideAcross ${flyDuration}s linear infinite`,
+                  animationDelay: `${delay}s`,
+                  zIndex: 1,
+                  filter: 'drop-shadow(0 4px 6px rgba(2, 132, 199, 0.25))',
+                }}
+              >
+                <AnimatedFlappingSeagull size={size} duration={flapSpeed} />
+              </div>
+            );
+          })}
+
+        {particleData.map((p) => (
+          <div
+            key={p.id}
+            style={{
+              position: 'absolute',
+              top: '-10%',
+              left: `${p.left}%`,
+              opacity: 0.85,
+              animation: `fallFlow ${p.duration}s linear infinite`,
+              animationDelay: `${p.delay}s`,
+              filter: 'drop-shadow(0 2px 6px rgba(0,0,0,0.3))',
+              zIndex: 2,
+            }}
+          >
+            <TaylorEraSVG era={p.eraType} size={p.size} />
+          </div>
+        ))}
+
+        <style>{`
+          @keyframes wingFlapLeft {
+            0% { transform: rotate(0deg) scaleY(1); }
+            100% { transform: rotate(-35deg) scaleY(0.5); }
+          }
+          @keyframes wingFlapRight {
+            0% { transform: rotate(0deg) scaleY(1); }
+            100% { transform: rotate(35deg) scaleY(0.5); }
+          }
+          @keyframes glideAcross {
+            0% { transform: translateX(0vw) translateY(0px) rotate(-3deg); opacity: 0; }
+            10% { opacity: 0.95; }
+            90% { opacity: 0.95; }
+            100% { transform: translateX(120vw) translateY(40px) rotate(3deg); opacity: 0; }
+          }
+          @keyframes cloudFlow {
+            0% { transform: translateX(-25px) translateY(-15px) scale(1); opacity: 0.7; }
+            50% { transform: translateX(35px) translateY(20px) scale(1.15); opacity: 0.95; }
+            100% { transform: translateX(-15px) translateY(30px) scale(0.95); opacity: 0.7; }
+          }
+          @keyframes fallFlow {
+            0% { transform: translateY(0vh) rotate(0deg) translateX(0px); opacity: 0.9; }
+            50% { transform: translateY(50vh) rotate(180deg) translateX(25px); }
+            100% { transform: translateY(110vh) rotate(360deg) translateX(-15px); opacity: 0.2; }
+          }
+        `}</style>
+      </div>
+    );
+  }
 
   if (effect === 'rain') {
     const rainDrops = Array.from({ length: 45 });
@@ -817,44 +1149,34 @@ const SeasonalParticles: React.FC<{ effect?: string }> = ({ effect }) => {
     );
   }
 
-  const items = Array.from({ length: 20 });
-
   return (
     <div style={{ position: 'absolute', inset: 0, overflow: 'hidden', pointerEvents: 'none', zIndex: 0 }}>
-      {items.map((_, i) => {
-        const left = Math.random() * 100;
-        const duration = 6 + Math.random() * 8;
-        const delay = Math.random() * 5;
-        const size = 22 + Math.random() * 14;
-        const iconType = i % 6;
-
-        return (
-          <div
-            key={i}
-            style={{
-              position: 'absolute',
-              top: '-10%',
-              left: `${left}%`,
-              opacity: 0.85,
-              animation: `fallFlow ${duration}s linear infinite`,
-              animationDelay: `${delay}s`,
-              filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.25))',
-            }}
-          >
-            {effect === 'berry' ? (
-              <BerrySVGIcon type={iconType} size={size} />
-            ) : (
-              <span style={{ fontSize: `${size}px` }}>
-                {effect === 'leaves'
-                  ? ['🍂', '🍁', '🍃'][i % 3]
-                  : effect === 'snow'
-                  ? '❄️'
-                  : ['🌸', '🌺', '🌼', '🌷'][i % 4]}
-              </span>
-            )}
-          </div>
-        );
-      })}
+      {particleData.map((p) => (
+        <div
+          key={p.id}
+          style={{
+            position: 'absolute',
+            top: '-10%',
+            left: `${p.left}%`,
+            opacity: 0.85,
+            animation: `fallFlow ${p.duration}s linear infinite`,
+            animationDelay: `${p.delay}s`,
+            filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.25))',
+          }}
+        >
+          {effect === 'berry' ? (
+            <BerrySVGIcon type={p.iconType} size={p.size} />
+          ) : (
+            <span style={{ fontSize: `${p.size}px` }}>
+              {effect === 'leaves'
+                ? ['🍂', '🍁', '🍃'][p.id % 3]
+                : effect === 'snow'
+                ? '❄️'
+                : ['🌸', '🌺', '🌼', '🌷'][p.id % 4]}
+            </span>
+          )}
+        </div>
+      ))}
       <style>{`
         @keyframes fallFlow {
           0% {
@@ -885,9 +1207,42 @@ const summarizeChatTitle = (msgs: Message[]): string => {
   return capitalized.slice(0, 26) + (capitalized.length > 26 ? '...' : '');
 };
 
+const parseTextIntoBlocksClient = (text: string): ExtractedTextBlock[] => {
+  const paragraphs = text.split(/\n\s*\n/);
+  const blocks: string[] = [];
+
+  paragraphs.forEach((p) => {
+    const trimmed = p.trim();
+    if (!trimmed) return;
+
+    if (blocks.length > 0 && blocks[blocks.length - 1].startsWith('|') && trimmed.startsWith('|')) {
+      blocks[blocks.length - 1] += '\n\n' + trimmed;
+    } else {
+      blocks.push(trimmed);
+    }
+  });
+
+  return blocks.map((b, idx) => ({
+    id: `blk-${idx + 1}`,
+    text: b,
+  }));
+};
+
+const isMarkdownTableBlock = (text: string): boolean => {
+  const lines = text.trim().split(/\r?\n/).filter(Boolean);
+  return lines.length >= 2 && lines[0].trim().startsWith('|') && lines[1].includes('---');
+};
+
+const getMarkdownTableRows = (text: string): string[][] =>
+  text
+    .trim()
+    .split(/\r?\n/)
+    .filter((line) => line.trim().startsWith('|') && !/^\s*\|?\s*:?-{3,}/.test(line))
+    .map((line) => line.trim().replace(/^\|\s*|\s*\|$/g, '').split('|').map((cell) => cell.trim()));
+
 export const ChatUI: React.FC = () => {
   const [selectedPaletteId, setSelectedPaletteId] = useState<string>(() => {
-    return localStorage.getItem(PALETTE_KEY) || 'berry';
+    return localStorage.getItem(PALETTE_KEY) || 'taylor';
   });
 
   const [mode, setMode] = useState<'dark' | 'light'>(() => {
@@ -898,7 +1253,7 @@ export const ChatUI: React.FC = () => {
     return localStorage.getItem(LANG_KEY) || 'en-US';
   });
 
-  const currentPreset = PALETTES[selectedPaletteId] || PALETTES.berry;
+  const currentPreset = PALETTES[selectedPaletteId] || PALETTES.taylor;
   const activeTheme = currentPreset[mode];
 
   const getCurrentTimeString = () => {
@@ -938,20 +1293,28 @@ export const ChatUI: React.FC = () => {
   const [isUploading, setIsUploading] = useState(false);
   const [isListening, setIsListening] = useState(false);
 
-  // VOICE AUDIO PLAYER STATES
   const [speakingMessageId, setSpeakingMessageId] = useState<string | null>(null);
   const [audioProgress, setAudioProgress] = useState<number>(0);
   const [audioDuration, setAudioDuration] = useState<number>(0);
-  const timerRef = useRef<any>(null);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const [uploadedDocId, setUploadedDocId] = useState<number | null>(null);
   const [chunks, setChunks] = useState<DocumentChunk[]>([]);
   const [showChunkModal, setShowChunkModal] = useState(false);
   const [isFetchingChunks, setIsFetchingChunks] = useState(false);
 
+  // MARKDOWN VS EXTRACTED TEXT VISUAL COMPARATOR & HOVER SYNC
+  const [showPreviewModal, setShowPreviewModal] = useState(false);
+  const [previewData, setPreviewData] = useState<DocumentPreviewData | null>(null);
+  const [hoveredBlockId, setHoveredBlockId] = useState<string | null>(null);
+
   const chatEndRef = useRef<HTMLDivElement>(null);
-  const recognitionRef = useRef<any>(null);
+  const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // DOM Refs for sync scroll and hover mapping
+  const leftTextRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const rightTextRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
   const handlePaletteChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const newId = e.target.value;
@@ -1006,8 +1369,18 @@ export const ChatUI: React.FC = () => {
       if (recognitionRef.current) recognitionRef.current.stop();
       if ('speechSynthesis' in window) window.speechSynthesis.cancel();
       if (timerRef.current) clearInterval(timerRef.current);
+      if (previewData?.fileUrl && previewData.fileUrl.startsWith('blob:')) {
+        URL.revokeObjectURL(previewData.fileUrl);
+      }
     };
-  }, []);
+  }, [previewData]);
+
+  const handleRightTextHover = (blockId: string | null) => {
+    setHoveredBlockId(blockId);
+    if (blockId && leftTextRefs.current[blockId]) {
+      leftTextRefs.current[blockId]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  };
 
   const startNewChat = () => {
     if ('speechSynthesis' in window) window.speechSynthesis.cancel();
@@ -1027,6 +1400,7 @@ export const ChatUI: React.FC = () => {
     setMessages([]);
     setUploadedDocId(null);
     setChunks([]);
+    setPreviewData(null);
   };
 
   const deleteSession = (sessionIdToDelete: string, e: React.MouseEvent) => {
@@ -1063,6 +1437,7 @@ export const ChatUI: React.FC = () => {
     setMessages([]);
     setUploadedDocId(null);
     setChunks([]);
+    setPreviewData(null);
   };
 
   const loadSession = (session: ChatSession) => {
@@ -1082,37 +1457,88 @@ export const ChatUI: React.FC = () => {
     formData.append('document', file);
 
     try {
+      const filePreviewUrl = URL.createObjectURL(file);
+
       const response = await fetch('http://localhost:3000/api/upload', {
         method: 'POST',
         body: formData,
       });
 
-      if (!response.ok) throw new Error(`Upload failed with status ${response.status}`);
-
-      const data = await response.json();
-      if (data.documentId || data.id || data.document?.id) {
-        setUploadedDocId(data.documentId || data.id || data.document?.id);
+      if (!response.ok) {
+        throw new Error(`Server status ${response.status}`);
       }
 
-      const systemMsg: Message = {
-        id: Date.now().toString(),
-        sender: 'assistant',
-        text: `📄 **Document Uploaded Successfully!**\n\n**File Name:** ${data.filename || file.name}\n\nYou can now ask questions based on this document or click **🧩 View Chunks** to inspect parsed chunks! 📖`,
-        timestamp: getCurrentTimeString(),
-      };
+      const data = await response.json();
 
-      setMessages((prev) => [...prev, systemMsg]);
-    } catch (err) {
-      console.error('[File Upload Error]:', err);
+      const docObj = data.document || data;
+      const docId = docObj.id || data.documentId || Date.now();
+      const fileName = docObj.filename || docObj.fileName || file.name;
+      setUploadedDocId(docId);
+
+      let parsedBlocks: ExtractedTextBlock[] = data.extractedBlocks || [];
+
+      if (!parsedBlocks || parsedBlocks.length === 0) {
+        let extractedChunks: DocumentChunk[] = [];
+        try {
+          const chunkRes = await fetch(`http://localhost:3000/api/chunks?documentId=${docId}`);
+          if (chunkRes.ok) {
+            const chunkData = await chunkRes.json();
+            extractedChunks = Array.isArray(chunkData)
+              ? chunkData
+              : chunkData.chunks || chunkData.data || [];
+            setChunks(extractedChunks);
+          }
+        } catch (cErr) {
+          console.warn('Could not fetch chunks automatically:', cErr);
+        }
+
+        if (extractedChunks.length > 0) {
+          parsedBlocks = extractedChunks.map((c, idx) => ({
+            id: `blk-${c.chunkIndex ?? idx + 1}`,
+            text: c.content || '',
+          }));
+        } else {
+          const rawText =
+            data.markdown ||
+            data.fullExtractedText ||
+            data.extractedText ||
+            data.content ||
+            data.text ||
+            '';
+
+          if (rawText.trim().length > 0) {
+            parsedBlocks = parseTextIntoBlocksClient(rawText);
+          }
+        }
+      }
+
+      if (parsedBlocks.length === 0) {
+        parsedBlocks = [{ id: 'blk-1', text: '*(No extracted text chunks returned for this document)*' }];
+      }
+
+      setPreviewData({
+        id: docId,
+        fileName: fileName,
+        fileUrl: data.fileUrl || filePreviewUrl,
+        markdownUrl: data.markdownUrl,
+        extractedBlocks: parsedBlocks,
+        fullExtractedText: data.fullExtractedText || parsedBlocks.map((b) => b.text).join('\n\n'),
+      });
+
+      setShowPreviewModal(true);
+
       setMessages((prev) => [
         ...prev,
         {
           id: Date.now().toString(),
           sender: 'assistant',
-          text: '❌ **File Upload Failed!** Please ensure your Express server is running on port 3000.',
+          text: `📄 **Document Upload Complete!**\n\nClick **👁️ Preview Doc** to launch the Visual Comparator for **${fileName}**! ✨`,
           timestamp: getCurrentTimeString(),
         },
       ]);
+    } catch (err) {
+      console.error('[File Upload Error]:', err);
+      alert('Failed to upload document. Make sure your Express server is running on http://localhost:3000!');
     } finally {
       setIsUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -1132,7 +1558,23 @@ export const ChatUI: React.FC = () => {
       if (!res.ok) throw new Error(`HTTP error ${res.status}`);
 
       const data = await res.json();
-      setChunks(data.chunks || []);
+
+      const returnedChunks = Array.isArray(data)
+        ? data
+        : data.chunks || data.data || [];
+
+      if (returnedChunks.length > 0) {
+        setChunks(returnedChunks);
+      } else if (chunks.length === 0) {
+        setChunks([
+          {
+            id: 1,
+            documentId: uploadedDocId || 1,
+            chunkIndex: 0,
+            content: 'No chunks generated for this file yet.',
+          },
+        ]);
+      }
     } catch (err) {
       console.error('[Fetch Chunks Error]:', err);
     } finally {
@@ -1161,7 +1603,7 @@ export const ChatUI: React.FC = () => {
     recognition.lang = selectedLanguage;
 
     recognition.onstart = () => setIsListening(true);
-    recognition.onresult = (event: any) => {
+    recognition.onresult = (event: SpeechRecognitionEvent) => {
       let transcript = '';
       for (let i = event.resultIndex; i < event.results.length; i++) {
         transcript += event.results[i][0].transcript;
@@ -1221,7 +1663,7 @@ export const ChatUI: React.FC = () => {
       timerRef.current = setInterval(() => {
         setAudioProgress((prev) => {
           if (prev >= estimatedSecs) {
-            clearInterval(timerRef.current);
+            if (timerRef.current) clearInterval(timerRef.current);
             return estimatedSecs;
           }
           return prev + 1;
@@ -1308,44 +1750,76 @@ export const ChatUI: React.FC = () => {
     }
   };
 
+  const isTaylorTheme = selectedPaletteId === 'taylor';
+
   return (
     <div
-      style={{
-        display: 'flex',
-        height: '100vh',
-        width: '100vw',
-        overflow: 'hidden',
-        position: 'relative',
-        fontFamily: "'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
-        backgroundColor: activeTheme.bgApp,
-        transition: 'background-color 0.3s ease',
-      }}
+      style={
+        {
+          display: 'flex',
+          height: '100vh',
+          width: '100vw',
+          overflow: 'hidden',
+          position: 'relative',
+          fontFamily: "'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+          backgroundColor: activeTheme.bgApp,
+          transition: 'background-color 0.3s ease',
+          '--sb-track': activeTheme.bgSidebar,
+          '--sb-thumb': activeTheme.chatBoxBorder,
+          '--sb-hover': activeTheme.sendBtnBg,
+        } as React.CSSProperties
+      }
     >
-      {/* THEMED DYNAMIC SCROLLBAR STYLES */}
       <style>{`
         ::-webkit-scrollbar {
           width: 8px;
           height: 8px;
         }
         ::-webkit-scrollbar-track {
-          background: ${activeTheme.bgSidebar};
+          background: var(--sb-track);
           border-radius: 4px;
         }
         ::-webkit-scrollbar-thumb {
-          background: ${activeTheme.chatBoxBorder};
+          background: var(--sb-thumb);
           border-radius: 4px;
         }
         ::-webkit-scrollbar-thumb:hover {
-          background: ${activeTheme.sendBtnBg};
+          background: var(--sb-hover);
         }
         * {
           scrollbar-width: thin;
-          scrollbar-color: ${activeTheme.chatBoxBorder} ${activeTheme.bgSidebar};
+          scrollbar-color: var(--sb-thumb) var(--sb-track);
+        }
+        
+        /* FULL GFM MARKDOWN TABLE AND FORMATTING STYLES */
+        .markdown-wrapper table {
+          width: 100%;
+          display: table;
+          border-collapse: collapse;
+          margin: 16px 0;
+          font-size: 13.5px;
+          background-color: rgba(0, 0, 0, 0.25);
+          border-radius: 6px;
+          overflow: hidden;
+        }
+        .markdown-wrapper th, .markdown-wrapper td {
+          border: 1px solid rgba(255, 255, 255, 0.22);
+          padding: 10px 14px;
+          text-align: left;
+        }
+        .markdown-wrapper th {
+          background-color: rgba(255, 255, 255, 0.15);
+          font-weight: bold;
+          text-transform: uppercase;
+          font-size: 12px;
+          letter-spacing: 0.5px;
+        }
+        .markdown-wrapper tr:nth-child(even) {
+          background-color: rgba(255, 255, 255, 0.05);
         }
       `}</style>
 
-      {/* FLOATING SEASONAL & THEMED PARTICLES */}
-      <SeasonalParticles effect={currentPreset.effect} />
+      <SeasonalParticles effect={currentPreset.effect} mode={mode} />
 
       {/* LEFT SIDEBAR */}
       <div
@@ -1428,7 +1902,6 @@ export const ChatUI: React.FC = () => {
           })}
         </div>
 
-        {/* SIDEBAR FOOTER */}
         <div style={{ marginTop: 'auto', paddingTop: '12px', borderTop: `1px solid ${activeTheme.sidebarBorder}` }}>
           <label style={{ color: activeTheme.sidebarTitle, fontSize: '11px', fontWeight: 'bold', display: 'block', marginBottom: '6px', textTransform: 'uppercase' }}>
             🎨 Color Scheme
@@ -1494,7 +1967,6 @@ export const ChatUI: React.FC = () => {
         }}
       >
         <div style={{ width: '100%', maxWidth: '850px' }}>
-          {/* HEADER BAR */}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
             <div style={{ width: '160px' }} />
             <h2
@@ -1507,10 +1979,9 @@ export const ChatUI: React.FC = () => {
                 fontSize: activeTheme.titleFont ? '28px' : '24px',
               }}
             >
-              {activeTheme.titleText || '✨ Universal Voice Bot ✨'}
+              {activeTheme.titleText || 'Universal Voice Bot'}
             </h2>
 
-            {/* LANGUAGE SELECTOR */}
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
               <select
                 value={selectedLanguage}
@@ -1537,18 +2008,23 @@ export const ChatUI: React.FC = () => {
             </div>
           </div>
 
-          {/* Main Chat Container */}
           <div
+            className="markdown-wrapper"
             style={{
-              border: `1px solid ${activeTheme.chatBoxBorder}`,
+              border: `2px solid ${activeTheme.chatBoxBorder}`,
               borderRadius: '14px',
               height: '480px',
               overflowY: 'auto',
               padding: '24px',
               marginBottom: '18px',
               backgroundColor: activeTheme.chatBoxBg,
-              backdropFilter: 'blur(10px)',
-              boxShadow: '0 6px 18px rgba(0, 0, 0, 0.12)',
+              backdropFilter: 'blur(12px)',
+              boxShadow: isTaylorTheme
+                ? mode === 'light'
+                  ? '0 0 25px rgba(244, 114, 182, 0.45)'
+                  : '0 0 25px rgba(60, 94, 66, 0.35)'
+                : '0 6px 18px rgba(0, 0, 0, 0.12)',
+              transition: 'all 0.3s ease',
             }}
           >
             {messages.length === 0 ? (
@@ -1578,7 +2054,6 @@ export const ChatUI: React.FC = () => {
                       msg.text
                     )}
 
-                    {/* ASSISTANT VOICE CONTROLS & INTERACTIVE AUDIO PLAYER */}
                     {msg.sender === 'assistant' && (
                       <div style={{ marginTop: '10px', paddingTop: '8px', borderTop: `1px solid ${activeTheme.sidebarBorder}` }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', marginBottom: speakingMessageId === msg.id ? '8px' : '0' }}>
@@ -1603,7 +2078,6 @@ export const ChatUI: React.FC = () => {
                           </span>
                         </div>
 
-                        {/* AUDIO SCRUBBER & DURATION DISPLAY */}
                         {speakingMessageId === msg.id && (
                           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '6px' }}>
                             <span style={{ fontSize: '10px', opacity: 0.8, fontFamily: 'monospace' }}>
@@ -1625,7 +2099,6 @@ export const ChatUI: React.FC = () => {
                       </div>
                     )}
 
-                    {/* USER TIMESTAMP */}
                     {msg.sender === 'user' && msg.timestamp && (
                       <div style={{ textAlign: 'right', marginTop: '4px', fontSize: '10px', opacity: 0.75 }}>
                         {msg.timestamp}
@@ -1640,8 +2113,8 @@ export const ChatUI: React.FC = () => {
           </div>
 
           {/* Input Controls */}
-          <div style={{ display: 'flex', gap: '10px' }}>
-            <input type="file" ref={fileInputRef} onChange={handleFileUpload} style={{ display: 'none' }} accept=".pdf,.txt,.md,.doc,.docx" />
+          <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+            <input type="file" ref={fileInputRef} onChange={handleFileUpload} style={{ display: 'none' }} accept=".pdf,.txt,.md,.doc,.docx,image/*" />
 
             <button
               onClick={() => fileInputRef.current?.click()}
@@ -1659,6 +2132,24 @@ export const ChatUI: React.FC = () => {
             >
               {isUploading ? '⏳ Uploading...' : '📄 Upload Doc'}
             </button>
+
+            {previewData && (
+              <button
+                onClick={() => setShowPreviewModal(true)}
+                style={{
+                  padding: '12px 14px',
+                  borderRadius: '8px',
+                  border: `1px solid ${activeTheme.chatBoxBorder}`,
+                  backgroundColor: activeTheme.newChatBtn,
+                  color: activeTheme.newChatBtnText,
+                  fontWeight: 'bold',
+                  cursor: 'pointer',
+                  fontSize: '13px',
+                }}
+              >
+                👁️ Preview Doc
+              </button>
+            )}
 
             <button
               onClick={fetchDocumentChunks}
@@ -1700,6 +2191,7 @@ export const ChatUI: React.FC = () => {
               placeholder="Speak or type your question..."
               style={{
                 flex: 1,
+                minWidth: '200px',
                 padding: '12px 16px',
                 borderRadius: '8px',
                 border: `2px solid ${activeTheme.chatBoxBorder}`,
@@ -1728,6 +2220,116 @@ export const ChatUI: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* 📄 FULL MARKDOWN FORMATTED DOCUMENT MODAL */}
+      {showPreviewModal && previewData && (
+        <div style={{ position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', backgroundColor: 'rgba(0, 0, 0, 0.85)', backdropFilter: 'blur(6px)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 9999 }}>
+          <div style={{ width: '95%', maxWidth: '1400px', height: '90vh', backgroundColor: activeTheme.chatBoxBg, border: `2px solid ${activeTheme.chatBoxBorder}`, borderRadius: '16px', padding: '20px', display: 'flex', flexDirection: 'column', boxShadow: '0 10px 30px rgba(0,0,0,0.5)' }}>
+            
+            {/* MODAL HEADER */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', borderBottom: `1px solid ${activeTheme.sidebarBorder}`, paddingBottom: '10px' }}>
+              <h3 style={{ margin: 0, color: activeTheme.mainTitle, fontSize: '18px', fontWeight: 'bold' }}>
+                📄 Visual Comparator: <span style={{ opacity: 0.8 }}>{previewData.fileName}</span>
+              </h3>
+              <button onClick={() => setShowPreviewModal(false)} style={{ backgroundColor: 'transparent', border: 'none', color: activeTheme.mainTitle, fontSize: '22px', fontWeight: 'bold', cursor: 'pointer' }}>✖</button>
+            </div>
+
+            <div style={{ flex: 1, display: 'flex', gap: '18px', overflow: 'hidden' }}>
+              
+              {/* LEFT SIDE: GENERATED MARKDOWN DOCUMENT */}
+              <div className="markdown-wrapper" style={{ flex: 1, backgroundColor: activeTheme.bgSidebar, borderRadius: '10px', padding: '18px', overflowY: 'auto', border: `1px solid ${activeTheme.sidebarBorder}` }}>
+                <h4 style={{ margin: '0 0 12px 0', color: activeTheme.sidebarTitle, fontSize: '13px', textTransform: 'uppercase' }}>
+                  📄 GENERATED MARKDOWN DOCUMENT
+                </h4>
+                <div style={{ color: activeTheme.sidebarText, fontSize: '14px', lineHeight: '1.65' }}>
+                  {previewData.extractedBlocks.map((block) => {
+                    const isHovered = hoveredBlockId === block.id;
+                    return (
+                      <div
+                        key={`left-${block.id}`}
+                        ref={(element) => { leftTextRefs.current[block.id] = element; }}
+                        style={{
+                          padding: '0 8px',
+                          margin: '0',
+                          borderLeft: isHovered ? `4px solid ${activeTheme.chatBoxBorder}` : '4px solid transparent',
+                          backgroundColor: isHovered ? `${activeTheme.newChatBtn}22` : 'transparent',
+                          color: activeTheme.sidebarText,
+                          transition: 'background-color 0.2s ease, border-color 0.2s ease',
+                        }}
+                      >
+                        {isMarkdownTableBlock(block.text) ? (
+                          <div style={{ overflowX: 'auto' }}>
+                            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                              <thead><tr>{getMarkdownTableRows(block.text)[0]?.map((cell, index) => <th key={index} style={{ border: `1px solid ${activeTheme.sidebarBorder}`, padding: '8px', textAlign: 'left', backgroundColor: activeTheme.chatBoxBg }}>{cell}</th>)}</tr></thead>
+                              <tbody>{getMarkdownTableRows(block.text).slice(1).map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, cellIndex) => <td key={cellIndex} style={{ border: `1px solid ${activeTheme.sidebarBorder}`, padding: '8px', verticalAlign: 'top' }}>{cell}</td>)}</tr>)}</tbody>
+                            </table>
+                          </div>
+                        ) : (
+                          <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>
+                            {block.text}
+                          </ReactMarkdown>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* RIGHT SIDE: PARSED TEXT, HEADINGS, AND TABLES */}
+              <div className="markdown-wrapper" style={{ flex: 1, backgroundColor: activeTheme.assistantBubbleBg, borderRadius: '10px', padding: '18px', overflowY: 'auto', border: `1px solid ${activeTheme.sidebarBorder}` }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                  <h4 style={{ margin: 0, color: activeTheme.sidebarTitle, fontSize: '13px', textTransform: 'uppercase' }}>
+                    📖 PARSED TEXT, HEADINGS & TABLES
+                  </h4>
+                  <span style={{ fontSize: '11px', opacity: 0.7, color: activeTheme.sidebarText }}>Hover to Highlight Block 🎯</span>
+                </div>
+
+                {previewData.extractedBlocks.filter((block) => !isMarkdownTableBlock(block.text)).map((block) => {
+                  const isHovered = hoveredBlockId === block.id;
+                  return (
+                    <div
+                      key={`right-${block.id}`}
+                      ref={(el) => { rightTextRefs.current[block.id] = el; }}
+                      onMouseEnter={() => handleRightTextHover(block.id)}
+                      onMouseLeave={() => handleRightTextHover(null)}
+                      style={{
+                        padding: '12px 16px',
+                        borderRadius: '8px',
+                        marginBottom: '10px',
+                        backgroundColor: isHovered ? activeTheme.newChatBtn : activeTheme.chatBoxBg,
+                        color: isHovered ? activeTheme.newChatBtnText : activeTheme.assistantBubbleText,
+                        border: `1px solid ${isHovered ? '#ef4444' : activeTheme.sidebarBorder}`,
+                        cursor: 'pointer',
+                        fontSize: '14px',
+                        lineHeight: '1.6',
+                        transition: 'all 0.2s ease',
+                        boxShadow: isHovered ? '0 0 12px rgba(239, 68, 68, 0.4)' : 'none',
+                      }}
+                    >
+                      <ReactMarkdown
+                        remarkPlugins={[remarkGfm, remarkBreaks]}
+                        components={{
+                          h1: ({ children }) => <h1 style={{ fontSize: '22px', margin: '18px 0 10px', color: activeTheme.mainTitle }}>{children}</h1>,
+                          h2: ({ children }) => <h2 style={{ fontSize: '18px', margin: '16px 0 8px', color: activeTheme.mainTitle }}>{children}</h2>,
+                          h3: ({ children }) => <h3 style={{ fontSize: '15px', margin: '14px 0 8px', color: activeTheme.sidebarTitle }}>{children}</h3>,
+                                                    p: ({ children }) => <p style={{ margin: '0 0 12px', lineHeight: '1.6' }}>{children}</p>,
+                                                    strong: ({ children }) => <strong style={{ fontWeight: 800 }}>{children}</strong>,
+                          table: ({ children }) => <div style={{ overflowX: 'auto', margin: '14px 0' }}><table style={{ width: '100%', borderCollapse: 'collapse' }}>{children}</table></div>,
+                          th: ({ children }) => <th style={{ border: `1px solid ${activeTheme.sidebarBorder}`, padding: '8px', textAlign: 'left', backgroundColor: activeTheme.chatBoxBg }}>{children}</th>,
+                          td: ({ children }) => <td style={{ border: `1px solid ${activeTheme.sidebarBorder}`, padding: '8px', verticalAlign: 'top' }}>{children}</td>,
+                        }}
+                      >
+                        {block.text}
+                      </ReactMarkdown>
+                    </div>
+                  );
+                })}
+              </div>
+
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* CHUNK INSPECTOR MODAL */}
       {showChunkModal && (
