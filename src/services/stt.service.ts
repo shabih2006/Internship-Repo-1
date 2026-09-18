@@ -1,5 +1,15 @@
 import fs from 'fs';
-import { Groq } from 'groq-sdk';
+import Groq from 'groq-sdk';
+
+// UPDATED: Map our BCP-47 codes → Whisper's ISO-639-1 codes (Arabic removed)
+const WHISPER_LANG_MAP: Record<string, string> = {
+  'en-US': 'en',
+  'ur-PK': 'ur',
+  'es-ES': 'es',
+  'fr-FR': 'fr',
+  'de-DE': 'de',
+  'zh-CN': 'zh',
+};
 
 export class SttService {
   private getGroqClient(): Groq {
@@ -7,7 +17,7 @@ export class SttService {
     return new Groq({ apiKey });
   }
 
-  async transcribeAudio(filePath: string): Promise<string> {
+  async transcribeAudio(filePath: string, languageCode: string = 'en-US'): Promise<string> {
     try {
       if (!fs.existsSync(filePath)) {
         throw new Error('Audio file does not exist on server path.');
@@ -16,11 +26,13 @@ export class SttService {
       const fileStream = fs.createReadStream(filePath);
       const groq = this.getGroqClient();
 
+      const whisperLang = WHISPER_LANG_MAP[languageCode] || 'en';
+
       const translation = await groq.audio.transcriptions.create({
         file: fileStream,
         model: 'whisper-large-v3-turbo',
         response_format: 'json',
-        language: 'en',
+        language: whisperLang,
         temperature: 0.0,
       });
 

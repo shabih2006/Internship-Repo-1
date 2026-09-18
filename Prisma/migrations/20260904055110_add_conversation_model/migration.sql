@@ -1,85 +1,54 @@
--- CreateTable
-CREATE TABLE "User" (
-    "UserID" SERIAL NOT NULL,
-    "Email" TEXT NOT NULL,
-    "Password" TEXT NOT NULL,
-    "Role" TEXT NOT NULL DEFAULT 'USER',
+-- ==========================================================
+-- Combined migration: RAG models + comparator columns
+-- Drop old wrong-shape Conversation table if present
+-- ==========================================================
 
-    CONSTRAINT "User_pkey" PRIMARY KEY ("UserID")
+DROP TABLE IF EXISTS "Conversation" CASCADE;
+
+CREATE TABLE "conversation" (
+    "id" SERIAL NOT NULL,
+    "student_id" INTEGER NOT NULL,
+    "role" TEXT NOT NULL,
+    "message" TEXT NOT NULL,
+    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "conversation_pkey" PRIMARY KEY ("id")
 );
 
--- CreateTable
-CREATE TABLE "Student" (
-    "StudentID" INTEGER NOT NULL,
-    "StudentName" TEXT NOT NULL,
-    "PhoneNo" TEXT,
-    "DOB" TEXT,
-    "Email" TEXT,
-
-    CONSTRAINT "Student_pkey" PRIMARY KEY ("StudentID")
+CREATE TABLE "user_preference" (
+    "id" SERIAL NOT NULL,
+    "student_id" INTEGER NOT NULL,
+    "preferred_language" TEXT NOT NULL DEFAULT 'English',
+    "learning_style" TEXT NOT NULL DEFAULT 'Detailed',
+    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updated_at" TIMESTAMP(3) NOT NULL,
+    CONSTRAINT "user_preference_pkey" PRIMARY KEY ("id")
 );
 
--- CreateTable
-CREATE TABLE "Teacher" (
-    "TeacherID" INTEGER NOT NULL,
-    "TeacherName" TEXT NOT NULL,
-    "Email" TEXT,
-    "PhoneNo" TEXT,
+CREATE UNIQUE INDEX "user_preference_student_id_key" ON "user_preference"("student_id");
 
-    CONSTRAINT "Teacher_pkey" PRIMARY KEY ("TeacherID")
+CREATE TABLE "document" (
+    "id" SERIAL NOT NULL,
+    "filename" TEXT NOT NULL,
+    "filepath" TEXT NOT NULL,
+    "filesize" INTEGER NOT NULL,
+    "markdown" TEXT,
+    "blocks_json" TEXT,
+    "page_dimensions_json" TEXT,
+    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "document_pkey" PRIMARY KEY ("id")
 );
 
--- CreateTable
-CREATE TABLE "Courses" (
-    "CourseID" INTEGER NOT NULL,
-    "CourseNmae" TEXT NOT NULL,
-    "CreditHours" INTEGER NOT NULL,
-    "TeacherID" INTEGER NOT NULL,
-
-    CONSTRAINT "Courses_pkey" PRIMARY KEY ("CourseID")
+CREATE TABLE "document_chunk" (
+    "id" SERIAL NOT NULL,
+    "document_id" INTEGER NOT NULL,
+    "chunk_index" INTEGER NOT NULL,
+    "content" TEXT NOT NULL,
+    "embedding" TEXT NOT NULL,
+    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "document_chunk_pkey" PRIMARY KEY ("id")
 );
 
--- CreateTable
-CREATE TABLE "Enrollment" (
-    "EnrollmentID" INTEGER NOT NULL,
-    "StudentID" INTEGER NOT NULL,
-    "CourseID" INTEGER NOT NULL,
-    "EnrollmentDate" TEXT,
-
-    CONSTRAINT "Enrollment_pkey" PRIMARY KEY ("EnrollmentID")
-);
-
--- CreateTable
-CREATE TABLE "Results" (
-    "ResultID" INTEGER NOT NULL,
-    "EnrollmentID" INTEGER NOT NULL,
-    "Grade" TEXT,
-    "GPA" DOUBLE PRECISION,
-
-    CONSTRAINT "Results_pkey" PRIMARY KEY ("ResultID")
-);
-
--- CreateTable
-CREATE TABLE "Conversation" (
-    "id" TEXT NOT NULL,
-    "userPrompt" TEXT NOT NULL,
-    "aiReply" TEXT NOT NULL,
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    CONSTRAINT "Conversation_pkey" PRIMARY KEY ("id")
-);
-
--- CreateIndex
-CREATE UNIQUE INDEX "User_Email_key" ON "User"("Email");
-
--- AddForeignKey
-ALTER TABLE "Courses" ADD CONSTRAINT "Courses_TeacherID_fkey" FOREIGN KEY ("TeacherID") REFERENCES "Teacher"("TeacherID") ON DELETE RESTRICT ON UPDATE CASCADE;
-
--- AddForeignKey
-ALTER TABLE "Enrollment" ADD CONSTRAINT "Enrollment_StudentID_fkey" FOREIGN KEY ("StudentID") REFERENCES "Student"("StudentID") ON DELETE RESTRICT ON UPDATE CASCADE;
-
--- AddForeignKey
-ALTER TABLE "Enrollment" ADD CONSTRAINT "Enrollment_CourseID_fkey" FOREIGN KEY ("CourseID") REFERENCES "Courses"("CourseID") ON DELETE RESTRICT ON UPDATE CASCADE;
-
--- AddForeignKey
-ALTER TABLE "Results" ADD CONSTRAINT "Results_EnrollmentID_fkey" FOREIGN KEY ("EnrollmentID") REFERENCES "Enrollment"("EnrollmentID") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "document_chunk"
+ADD CONSTRAINT "document_chunk_document_id_fkey"
+FOREIGN KEY ("document_id") REFERENCES "document"("id")
+ON DELETE CASCADE ON UPDATE CASCADE;

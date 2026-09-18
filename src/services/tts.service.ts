@@ -2,6 +2,22 @@ import gTTS from 'gtts';
 import fs from 'fs';
 import path from 'path';
 
+// UPDATED: Map BCP-47 → gTTS ISO-639-1 (Arabic removed)
+const GTTS_LANG_MAP: Record<string, string> = {
+  'en-US': 'en',
+  'ur-PK': 'ur',
+  'es-ES': 'es',
+  'fr-FR': 'fr',
+  'de-DE': 'de',
+  'zh-CN': 'zh-CN',
+};
+
+// Helper: Detect if text contains Urdu/Arabic script characters
+const isUrduScript = (text: string): boolean => {
+  const urduRegex = /[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]/;
+  return urduRegex.test(text);
+};
+
 export class TtsService {
   private outputDir: string;
 
@@ -16,49 +32,57 @@ export class TtsService {
     }
   }
 
-  async generateSpeech(text: string): Promise<string> {
+  async generateSpeech(text: string, languageCode: string = 'en-US'): Promise<string> {
     this.ensureDirectoryExists();
 
     const filename = `answer-${Date.now()}.mp3`;
     const filePath = path.join(this.outputDir, filename);
 
-    // 1. Sanitize text: remove markdown, URLs, citations, and extra punctuation
+    // 1. Sanitize text
     const plainText = text
-      .replace(/https?:\/\/\S+/g, '') // Remove URLs
-      .replace(/\[Source\s*\d+\]/gi, '') // Remove citations
-      .replace(/\[.*?\]\(.*?\)/g, '') // Remove markdown links
-      .replace(/[*#_`~>-]/g, ' ') // Remove markdown headers/formatting
-      .replace(/[\r\n]+/g, '. ') // Turn newlines into periods
-      .replace(/\s+/g, ' ') // Collapse spaces
-      .replace(/\.\s*\./g, '.') // Fix double periods
+      .replace(/https?:\/\/\S+/g, '')
+      .replace(/\[Source\s*\d+\]/gi, '')
+      .replace(/\[.*?\]\(.*?\)/g, '')
+      .replace(/[*#_`~>-]/g, ' ')
+      .replace(/[\r\n]+/g, '. ')
+      .replace(/\s+/g, ' ')
+      .replace(/\.\s*\./g, '.')
       .trim();
 
     const finalText = plainText || 'No answer provided.';
 
-    // 2. Sentence & Clause Aware Chunking (Max 150 chars per request)
-    const chunks = this.splitIntoChunks(finalText, 150);
+    // UPDATED: Detect if text is actually Urdu and use Urdu TTS
+    const textIsUrdu = isUrduScript(finalText);
+    let gttsLang: string;
 
-    // If single chunk, save directly without temporary files
+    if (textIsUrdu) {
+      gttsLang = 'ur';
+      console.log('[TTS] Detected Urdu text, using Urdu TTS voice');
+    } else {
+      gttsLang = GTTS_LANG_MAP[languageCode] || 'en';
+    }
+
+    // 2. Sentence & Clause Aware Chunking
+    const maxChunk = gttsLang === 'ur' ? 100 : 150;
+    const chunks = this.splitIntoChunks(finalText, maxChunk);
+
     if (chunks.length === 1) {
-      await this.saveChunkToFile(chunks[0], filePath);
+      await this.saveChunkToFile(chunks[0], filePath, gttsLang);
       return filePath;
     }
 
-    // 3. Process multiple chunks safely
     const tempFiles: string[] = [];
 
     try {
       for (let i = 0; i < chunks.length; i++) {
         const tempPath = path.join(this.outputDir, `temp-${Date.now()}-${i}.mp3`);
-        await this.saveChunkToFile(chunks[i], tempPath);
+        await this.saveChunkToFile(chunks[i], tempPath, gttsLang);
         tempFiles.push(tempPath);
       }
 
-      // 4. Merge buffers
       const audioBuffers = tempFiles.map((file) => fs.readFileSync(file));
       fs.writeFileSync(filePath, Buffer.concat(audioBuffers));
     } finally {
-      // 5. Cleanup temporary chunk files
       tempFiles.forEach((file) => {
         if (fs.existsSync(file)) {
           try {
@@ -83,10 +107,8 @@ export class TtsService {
         break;
       }
 
-      // Try splitting by sentence boundary first
       let splitIndex = -1;
-      const sentenceEndMatches = [...remaining.matchAll(/[\.\!\?]\s/g)];
-
+      const sentenceEndMatches = [...remaining.matchAll(/[\.\!\?۔]\s/g)]; // include Urdu full stop ۔
       for (const match of sentenceEndMatches) {
         if (match.index! + 1 <= maxLength) {
           splitIndex = match.index! + 1;
@@ -95,9 +117,8 @@ export class TtsService {
         }
       }
 
-      // Fallback to clause boundary (comma, semicolon)
       if (splitIndex === -1) {
-        const clauseMatches = [...remaining.matchAll(/[\,\;\:]\s/g)];
+        const clauseMatches = [...remaining.matchAll(/[\,\;\:،]\s/g)]; // include Urdu comma ،
         for (const match of clauseMatches) {
           if (match.index! + 1 <= maxLength) {
             splitIndex = match.index! + 1;
@@ -107,12 +128,10 @@ export class TtsService {
         }
       }
 
-      // Fallback to space split
       if (splitIndex === -1) {
         splitIndex = remaining.lastIndexOf(' ', maxLength);
       }
 
-      // Hard cut if no space found
       if (splitIndex === -1 || splitIndex === 0) {
         splitIndex = maxLength;
       }
@@ -125,9 +144,9 @@ export class TtsService {
     return chunks;
   }
 
-  private saveChunkToFile(text: string, filePath: string): Promise<void> {
+  private saveChunkToFile(text: string, filePath: string, lang: string): Promise<void> {
     return new Promise((resolve, reject) => {
-      const gtts = new gTTS(text, 'en');
+      const gtts = new gTTS(text, lang);
       gtts.save(filePath, (err: any) => {
         if (err) return reject(err);
         resolve();

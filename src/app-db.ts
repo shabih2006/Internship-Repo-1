@@ -8,8 +8,6 @@ import rateLimit from 'express-rate-limit';
 import cors from 'cors';
 import path from 'path';
 
-import { audioUpload } from './middleware/audioUpload.middleware.js';
-import { VoiceController } from './controllers/voice.controller.js';
 import { AuthController } from './controllers/auth.controller.js';
 import { StudentController } from './controllers/student.controller.js';
 import { ChatController } from './controllers/chat.controller.js';
@@ -43,7 +41,6 @@ const authController = new AuthController();
 const studentController = new StudentController();
 const chatController = new ChatController();
 const documentController = new DocumentController();
-const voiceController = new VoiceController();
 const ragController = new RagController();
 
 // RATE LIMITER FOR AUTHENTICATED CHAT
@@ -109,6 +106,10 @@ app.post('/api/upload', uploadPdf.single('document'), (req, res) =>
   documentController.uploadDocument(req, res)
 );
 
+app.get('/api/documents/:id/comparison', (req, res) =>
+  documentController.getComparison(req, res)
+);
+
 // AUTHENTICATION ROUTES
 app.post('/auth/register', (req, res) => authController.register(req, res));
 app.post('/auth/login', (req, res) => authController.login(req, res));
@@ -168,14 +169,6 @@ app.get('/api/chunks', async (req, res) => {
   }
 });
 
-// RAG VOICE ASSISTANT ROUTES
-app.post('/ai/voice-upload', authenticateToken, audioUpload.single('audio'), (req, res) =>
-  voiceController.handleAudioUpload(req, res)
-);
-app.post('/voice/upload', authenticateToken, audioUpload.single('file'), (req, res) =>
-  voiceController.handleAudioUpload(req, res)
-);
-
 // 404 HANDLER
 app.use((req: Request, res: Response) => {
   res.status(404).json({ error: `Route ${req.originalUrl} not found.` });
@@ -186,5 +179,5 @@ const server = app.listen(PORT, () => {
   console.log(`🚀 Server listening on http://localhost:${PORT}`);
 });
 
-// Timeout extension for voice & LLM generation pipelines
+// Timeout extension for LLM generation pipelines
 server.timeout = 120000;

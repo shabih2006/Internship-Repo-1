@@ -11,14 +11,6 @@ export interface SimilarChunk {
   similarityScore: number;
 }
 
-interface RawQueryChunk {
-  id: number | bigint;
-  documentId: number;
-  chunkIndex: number;
-  content: string;
-  similarityScore: number | string;
-}
-
 interface DbDocumentChunk {
   id: number;
   documentId: number;
@@ -48,89 +40,46 @@ export class SimilarityService {
     documentId?: number
   ): Promise<SimilarChunk[]> {
     const queryEmbedding = await embeddingService.generateEmbedding(question);
-    const vectorString = `[${queryEmbedding.join(',')}]`;
 
-    let chunks: SimilarChunk[] = [];
-
-    // 1. Try vector similarity search on PostgreSQL (pgvector)
     try {
-      let rawResults: RawQueryChunk[] = [];
+      const whereClause =
+        documentId && !isNaN(documentId) && documentId > 0
+          ? { documentId: Number(documentId) }
+          : {};
 
-      if (documentId !== undefined && !isNaN(documentId) && documentId > 0) {
-        rawResults = await prisma.$queryRaw<RawQueryChunk[]>`
-          SELECT id, document_id as "documentId", chunk_index as "chunkIndex", content,
-                 1 - (embedding <=> ${vectorString}::vector) as "similarityScore"
-          FROM public.document_chunk
-          WHERE document_id = ${documentId}
-          ORDER BY embedding <=> ${vectorString}::vector ASC
-          LIMIT ${limit};
-        `;
-      } else {
-        rawResults = await prisma.$queryRaw<RawQueryChunk[]>`
-          SELECT id, document_id as "documentId", chunk_index as "chunkIndex", content,
-                 1 - (embedding <=> ${vectorString}::vector) as "similarityScore"
-          FROM public.document_chunk
-          ORDER BY embedding <=> ${vectorString}::vector ASC
-          LIMIT ${limit};
-        `;
-      }
+      const allDbChunks = (await prisma.documentChunk.findMany({
+        where: whereClause,
+        take: 2000,
+      })) as unknown as DbDocumentChunk[];
 
-      if (rawResults && rawResults.length > 0) {
-        chunks = rawResults.map((c) => ({
-          id: Number(c.id),
-          documentId: Number(c.documentId),
-          chunkIndex: Number(c.chunkIndex),
-          content: String(c.content || ''),
-          similarityScore: Number(c.similarityScore || 0),
-        }));
-      }
-    } catch (e: unknown) {
-      console.warn('Vector query failed, using in-memory cosine fallback...');
-    }
-
-    // 2. In-memory Cosine Fallback
-    if (!chunks || chunks.length === 0) {
-      try {
-        const whereClause =
-          documentId && !isNaN(documentId) && documentId > 0
-            ? { documentId: Number(documentId) }
-            : {};
-
-        const allDbChunks = (await prisma.documentChunk.findMany({
-          where: whereClause,
-          take: 200,
-        })) as unknown as DbDocumentChunk[];
-
-        const scored: SimilarChunk[] = allDbChunks.map((c) => {
-          let emb: number[] = [];
-          if (Array.isArray(c.embedding)) {
-            emb = c.embedding as number[];
-          } else if (typeof c.embedding === 'string') {
-            try {
-              emb = JSON.parse(c.embedding);
-            } catch (err: unknown) {
-              // Ignore invalid string JSON formatting
-            }
+      const scored: SimilarChunk[] = allDbChunks.map((c) => {
+        let emb: number[] = [];
+        if (Array.isArray(c.embedding)) {
+          emb = c.embedding as number[];
+        } else if (typeof c.embedding === 'string') {
+          try {
+            emb = JSON.parse(c.embedding);
+          } catch {
+            /* ignore invalid JSON */
           }
+        }
 
-          return {
-            id: Number(c.id || 0),
-            documentId: Number(c.documentId || 1),
-            chunkIndex: Number(c.chunkIndex || 0),
-            content: String(c.content || ''),
-            similarityScore:
-              emb.length > 0 ? cosineSimilarity(queryEmbedding, emb) : 0,
-          };
-        });
+        return {
+          id: Number(c.id || 0),
+          documentId: Number(c.documentId || 1),
+          chunkIndex: Number(c.chunkIndex || 0),
+          content: String(c.content || ''),
+          similarityScore:
+            emb.length > 0 ? cosineSimilarity(queryEmbedding, emb) : 0,
+        };
+      });
 
-        scored.sort((a, b) => b.similarityScore - a.similarityScore);
-        chunks = scored.slice(0, limit);
-      } catch (err: unknown) {
-        console.error('In-memory similarity fallback failed:', err);
-      }
+      scored.sort((a, b) => b.similarityScore - a.similarityScore);
+      return scored.slice(0, limit);
+    } catch (err) {
+      console.error('Similarity search failed:', err);
+      return [];
     }
-
-    return chunks;
   }
 }
 

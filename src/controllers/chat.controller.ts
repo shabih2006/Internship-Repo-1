@@ -2,10 +2,12 @@ import { Request, Response } from 'express';
 import { LiveAIService } from '../services/live-ai.service.js';
 import { ChatRepository } from '../repositories/chat.repository.js';
 import { similarityService } from '../services/similarity.service.js';
+import { buildRagPrompt } from '../config/prompt.config.js';
 
 const liveAIService = new LiveAIService();
 const chatRepository = new ChatRepository();
 
+// UPDATED: Removed Arabic
 const LANGUAGE_MAP: Record<string, string> = {
   'en-US': 'English',
   'ur-PK': 'Urdu',
@@ -13,7 +15,6 @@ const LANGUAGE_MAP: Record<string, string> = {
   'fr-FR': 'French',
   'de-DE': 'German',
   'zh-CN': 'Mandarin Chinese',
-  'ar-SA': 'Arabic',
 };
 
 export class ChatController {
@@ -26,10 +27,8 @@ export class ChatController {
         return;
       }
 
-      // Determine target language flexibly
       let targetLanguage = LANGUAGE_MAP[language] || 'English';
       if (targetLanguageName) {
-        // Strip out emojis from friendly name (e.g., "🇫🇷 French (Français)" -> "French")
         const cleanName = targetLanguageName.replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/gu, '').trim();
         targetLanguage = cleanName.split('(')[0].trim();
       }
@@ -48,15 +47,9 @@ export class ChatController {
         console.warn('[RAG Search Warning]: Proceeding without document context:', searchErr);
       }
 
-      let finalPrompt = prompt;
-      if (contextText) {
-        finalPrompt = `RELEVANT DOCUMENT CONTEXT:\n${contextText}\n\nUSER QUESTION: ${prompt}`;
-      }
+      const finalPrompt = buildRagPrompt(contextText, prompt);
 
-      // Explicitly prepend prompt level instruction
-      const mandatoryLanguagePrompt = `[TRANSLATION MANDATE: YOU MUST ANSWER ENTIRELY IN NATIVE ${targetLanguage.toUpperCase()} SCRIPT. DO NOT USE ENGLISH.]\n\n${finalPrompt}`;
-
-      const reply = await liveAIService.generateResponse(Number(studentId), mandatoryLanguagePrompt, targetLanguage);
+      const reply = await liveAIService.generateResponse(Number(studentId), finalPrompt, targetLanguage);
 
       res.status(200).json({
         success: true,

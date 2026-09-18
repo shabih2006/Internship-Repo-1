@@ -69,37 +69,39 @@ model Conversation {
 }
 
 model UserPreference {
-  id               Int      @id @default(autoincrement())
-  studentId        Int      @unique @map("student_id")
+  id                Int      @id @default(autoincrement())
+  studentId         Int      @unique @map("student_id")
   preferredLanguage String   @default("English") @map("preferred_language")
-  learningStyle    String   @default("Detailed") @map("learning_style")
-  createdAt        DateTime @default(now()) @map("created_at")
-  updatedAt        DateTime @updatedAt @map("updated_at")
+  learningStyle     String   @default("Detailed") @map("learning_style")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
 
   @@map("user_preference")
 }
 
 model Document {
-  id        Int      @id @default(autoincrement())
-  filename  String
-  filepath  String
-  filesize  Int
-  createdAt DateTime @default(now()) @map("created_at")
-  chunks    DocumentChunk[]
+  id                 Int      @id @default(autoincrement())
+  filename           String
+  filepath           String
+  filesize           Int
+  markdown           String?  @db.Text
+  blocksJson         String?  @db.Text @map("blocks_json")
+  pageDimensionsJson String?  @db.Text @map("page_dimensions_json")
+  createdAt          DateTime @default(now()) @map("created_at")
+  chunks             DocumentChunk[]
 
   @@map("document")
 }
 
-
 model DocumentChunk {
-  id          Int      @id @default(autoincrement())
-  documentId  Int      @map("document_id")
-  chunkIndex  Int      @map("chunk_index")
-  content     String   @db.Text
-  embedding   String   @db.Text // JSON string representation of the vector array
-  createdAt   DateTime @default(now()) @map("created_at")
+  id         Int      @id @default(autoincrement())
+  documentId Int      @map("document_id")
+  chunkIndex Int      @map("chunk_index")
+  content    String   @db.Text
+  embedding  String   @db.Text
+  createdAt  DateTime @default(now()) @map("created_at")
 
-  document    Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
 
   @@map("document_chunk")
 }

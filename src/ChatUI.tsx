@@ -1,7 +1,8 @@
-import React, { useState, useRef, useEffect, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
+import { PdfComparator } from './components/PdfComparator';
 
 // --- Web Speech API Interfaces ---
 interface SpeechRecognitionEvent {
@@ -22,7 +23,7 @@ interface SpeechRecognitionInstance {
   lang: string;
   onstart: () => void;
   onresult: (event: SpeechRecognitionEvent) => void;
-  onerror: () => void;
+  onerror: (event: any) => void;
   onend: () => void;
   start: () => void;
   stop: () => void;
@@ -33,6 +34,9 @@ interface Message {
   sender: 'user' | 'assistant';
   text: string;
   timestamp?: string;
+  documentId?: number;
+  fileName?: string;
+  audioUrl?: string;
 }
 
 interface ChatSession {
@@ -49,9 +53,14 @@ interface DocumentChunk {
   content: string;
 }
 
-interface ExtractedTextBlock {
+interface ParsedBlock {
   id: string;
-  text: string;
+  type: 'text' | 'heading' | 'table';
+  markdown: string;
+  plainValue: string;
+  html?: string;
+  page: number;
+  bbox: { x: number; y: number; width: number; height: number };
 }
 
 interface DocumentPreviewData {
@@ -59,8 +68,21 @@ interface DocumentPreviewData {
   fileName: string;
   fileUrl: string;
   markdownUrl?: string;
-  extractedBlocks: ExtractedTextBlock[];
+  blocks: ParsedBlock[];
+  pageDimensions: Record<number, { width: number; height: number }>;
   fullExtractedText?: string;
+}
+
+interface UploadedDoc {
+  id: number;
+  fileName: string;
+  fileUrl: string;
+  markdownUrl?: string;
+  blocks: ParsedBlock[];
+  pageDimensions: Record<number, { width: number; height: number }>;
+  fullExtractedText?: string;
+  messageId: string;
+  uploadedAt: string;
 }
 
 export interface ThemeColors {
@@ -97,6 +119,7 @@ export interface PalettePreset {
   light: ThemeColors;
 }
 
+// UPDATED: Removed Arabic
 const SUPPORTED_LANGUAGES = [
   { code: 'en-US', name: '🇺🇸 English' },
   { code: 'ur-PK', name: '🇵🇰 Urdu (اردو)' },
@@ -104,8 +127,25 @@ const SUPPORTED_LANGUAGES = [
   { code: 'fr-FR', name: '🇫🇷 French (Français)' },
   { code: 'de-DE', name: '🇩🇪 German (Deutsch)' },
   { code: 'zh-CN', name: '🇨🇳 Mandarin (中文)' },
-  { code: 'ar-SA', name: '🇸🇦 Arabic (العربية)' },
 ];
+
+const getLanguageForTTS = (langCode: string): string => {
+  const langMap: Record<string, string> = {
+    'en-US': 'en-US',
+    'ur-PK': 'ur-PK',
+    'es-ES': 'es-ES',
+    'fr-FR': 'fr-FR',
+    'de-DE': 'de-DE',
+    'zh-CN': 'zh-CN',
+  };
+  return langMap[langCode] || 'en-US';
+};
+
+// Detect Urdu/Arabic-script characters
+const isUrduText = (text: string): boolean => {
+  const urduRegex = /[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]/;
+  return urduRegex.test(text);
+};
 
 const PALETTES: Record<string, PalettePreset> = {
   taylor: {
@@ -151,11 +191,11 @@ const PALETTES: Record<string, PalettePreset> = {
       newChatBtn: '#dc2626',
       newChatBtnText: '#ffffff',
       mainTitle: '#991b1b',
-      chatBoxBg: 'rgba(255, 255, 255, 0.85)',
-      chatBoxBorder: '#f472b6',
+      chatBoxBg: 'rgba(255, 255, 255, 0.45)',
+      chatBoxBorder: 'rgba(244, 114, 182, 0.5)',
       userBubbleBg: '#dc2626',
       userBubbleText: '#ffffff',
-      assistantBubbleBg: '#f0f9ff',
+      assistantBubbleBg: 'rgba(240, 249, 255, 0.7)',
       assistantBubbleText: '#0f172a',
       voiceBtnBg: '#eab308',
       voiceBtnText: '#422006',
@@ -165,7 +205,7 @@ const PALETTES: Record<string, PalettePreset> = {
   },
   berry: {
     id: 'berry',
-    name: '🍇 Bold Berry',
+    name: '🍓 Bold Berry',
     effect: 'berry',
     dark: {
       titleText: '💖 Hello Girlypop 💖',
@@ -181,11 +221,11 @@ const PALETTES: Record<string, PalettePreset> = {
       newChatBtn: '#d9537f',
       newChatBtnText: '#ffffff',
       mainTitle: '#fde8f0',
-      chatBoxBg: '#331222',
-      chatBoxBorder: '#612143',
+      chatBoxBg: 'rgba(51, 18, 34, 0.75)',
+      chatBoxBorder: 'rgba(97, 33, 67, 0.6)',
       userBubbleBg: '#a0406d',
       userBubbleText: '#ffffff',
-      assistantBubbleBg: '#260d19',
+      assistantBubbleBg: 'rgba(38, 13, 25, 0.7)',
       assistantBubbleText: '#fde8f0',
       voiceBtnBg: '#f794b1',
       voiceBtnText: '#1f0a14',
@@ -206,11 +246,11 @@ const PALETTES: Record<string, PalettePreset> = {
       newChatBtn: '#a0406d',
       newChatBtnText: '#ffffff',
       mainTitle: '#331222',
-      chatBoxBg: '#ffffff',
-      chatBoxBorder: '#ea9ab8',
+      chatBoxBg: 'rgba(255, 255, 255, 0.45)',
+      chatBoxBorder: 'rgba(234, 154, 184, 0.5)',
       userBubbleBg: '#a0406d',
       userBubbleText: '#ffffff',
-      assistantBubbleBg: '#fbf0f5',
+      assistantBubbleBg: 'rgba(251, 240, 245, 0.7)',
       assistantBubbleText: '#331222',
       voiceBtnBg: '#a0406d',
       voiceBtnText: '#ffffff',
@@ -335,11 +375,11 @@ const PALETTES: Record<string, PalettePreset> = {
       newChatBtn: '#0284c7',
       newChatBtnText: '#ffffff',
       mainTitle: '#bae6fd',
-      chatBoxBg: '#17222d',
-      chatBoxBorder: '#38bdf8',
+      chatBoxBg: 'rgba(23, 34, 45, 0.65)',
+      chatBoxBorder: 'rgba(56, 189, 248, 0.4)',
       userBubbleBg: '#0284c7',
       userBubbleText: '#ffffff',
-      assistantBubbleBg: '#0a1015',
+      assistantBubbleBg: 'rgba(10, 16, 21, 0.6)',
       assistantBubbleText: '#e0f2fe',
       voiceBtnBg: '#38bdf8',
       voiceBtnText: '#0f171e',
@@ -624,7 +664,7 @@ const PALETTES: Record<string, PalettePreset> = {
   },
   pastel: {
     id: 'pastel',
-    name: '🎀 Subtle Pastel Hues',
+    name: '🎨 Subtle Pastel Hues',
     dark: {
       bgApp: '#1e222a',
       bgSidebar: '#272c36',
@@ -778,6 +818,7 @@ const STORAGE_KEY = 'universal_voice_bot_sessions';
 const PALETTE_KEY = 'universal_voice_bot_palette';
 const THEME_KEY = 'universal_voice_bot_theme_mode';
 const LANG_KEY = 'universal_voice_bot_language';
+const SIDEBAR_KEY = 'universal_voice_bot_sidebar_collapsed';
 
 const BerrySVGIcon: React.FC<{ type: number; size: number }> = ({ type, size }) => {
   switch (type) {
@@ -1196,6 +1237,122 @@ const SeasonalParticles: React.FC<{ effect?: string; mode?: 'dark' | 'light' }> 
   );
 };
 
+/* ============================================================
+   ❄️ FROSTED RAIN OVERLAY (Monsoon Dark only)
+   ============================================================ */
+const FrostedRainOverlay: React.FC = () => {
+  const droplets = useMemo(() => {
+    return Array.from({ length: 50 }).map((_, i) => ({
+      id: i,
+      left: Math.random() * 100,
+      top: Math.random() * 100,
+      size: 4 + Math.random() * 18,
+      blur: Math.random() * 1.5,
+      opacity: 0.3 + Math.random() * 0.5,
+      duration: 8 + Math.random() * 12,
+      delay: Math.random() * 10,
+      isLens: Math.random() > 0.7,
+    }));
+  }, []);
+
+  const streaks = useMemo(() => {
+    return Array.from({ length: 15 }).map((_, i) => ({
+      id: i,
+      left: Math.random() * 100,
+      width: 1.5 + Math.random() * 2.5,
+      height: 50 + Math.random() * 150,
+      opacity: 0.1 + Math.random() * 0.15,
+      duration: 15 + Math.random() * 15,
+      delay: Math.random() * 12,
+    }));
+  }, []);
+
+  return (
+    <div
+      aria-hidden
+      style={{
+        position: 'absolute',
+        inset: 0,
+        pointerEvents: 'none',
+        borderRadius: '14px',
+        overflow: 'hidden',
+        zIndex: 0,
+      }}
+    >
+      <div
+        style={{
+          position: 'absolute',
+          inset: 0,
+          background: `
+            radial-gradient(circle at 30% 20%, rgba(186, 230, 253, 0.25) 0%, transparent 50%),
+            radial-gradient(circle at 80% 70%, rgba(125, 211, 252, 0.15) 0%, transparent 60%),
+            linear-gradient(135deg, #1e3a4a 0%, #2c5a6e 100%)
+          `,
+          filter: 'blur(60px)',
+          transform: 'scale(1.2)',
+        }}
+      />
+
+      {streaks.map((s) => (
+        <div
+          key={`streak-${s.id}`}
+          style={{
+            position: 'absolute',
+            top: '-20%',
+            left: `${s.left}%`,
+            width: `${s.width}px`,
+            height: `${s.height}px`,
+            background:
+              'linear-gradient(to bottom, rgba(224, 242, 254, 0) 0%, rgba(224, 242, 254, 0.6) 40%, rgba(224, 242, 254, 0) 100%)',
+            opacity: s.opacity,
+            filter: 'blur(0.5px)',
+            animation: `condensationSlide ${s.duration}s linear infinite`,
+            animationDelay: `${s.delay}s`,
+          }}
+        />
+      ))}
+
+      {droplets.map((d) => (
+        <div
+          key={`drop-${d.id}`}
+          style={{
+            position: 'absolute',
+            left: `${d.left}%`,
+            top: `${d.top}%`,
+            width: `${d.size}px`,
+            height: `${d.size}px`,
+            borderRadius: '50%',
+            background: d.isLens
+              ? `radial-gradient(circle at 35% 35%, rgba(255,255,255,0.95) 0%, rgba(186,230,253,0.4) 50%, rgba(56,189,248,0.1) 80%, transparent 100%)`
+              : `radial-gradient(circle at 30% 30%, rgba(255,255,255,0.8) 0%, rgba(186,230,253,0.2) 60%, transparent 100%)`,
+            boxShadow: d.isLens
+              ? `0 0 ${d.size}px rgba(186, 230, 253, 0.5), inset 0 0 ${d.size / 2}px rgba(255,255,255,0.8)`
+              : `0 1px 3px rgba(56, 189, 248, 0.3)`,
+            filter: `blur(${d.blur}px)`,
+            opacity: d.opacity,
+            animation: `dropletCling ${d.duration}s ease-in-out infinite`,
+            animationDelay: `${d.delay}s`,
+          }}
+        />
+      ))}
+
+      <style>{`
+        @keyframes condensationSlide {
+          0%   { transform: translateY(0);      opacity: 0; }
+          10%  { opacity: 0.9; }
+          90%  { opacity: 0.5; }
+          100% { transform: translateY(120vh);  opacity: 0; }
+        }
+        @keyframes dropletCling {
+          0%   { transform: translateY(0px) scale(1);    opacity: 0.4; }
+          50%  { transform: translateY(8px) scale(1.1); opacity: 0.8; }
+          100% { transform: translateY(0px) scale(1);    opacity: 0.4; }
+        }
+      `}</style>
+    </div>
+  );
+};
+
 const summarizeChatTitle = (msgs: Message[]): string => {
   if (msgs.length === 0) return 'New Chat';
   const userMessages = msgs.filter((m) => m.sender === 'user').map((m) => m.text);
@@ -1207,38 +1364,69 @@ const summarizeChatTitle = (msgs: Message[]): string => {
   return capitalized.slice(0, 26) + (capitalized.length > 26 ? '...' : '');
 };
 
-const parseTextIntoBlocksClient = (text: string): ExtractedTextBlock[] => {
-  const paragraphs = text.split(/\n\s*\n/);
-  const blocks: string[] = [];
+/* ============================================================
+   SIDEBAR ICONS
+   ============================================================ */
+const IconChevronLeft: React.FC<{ size?: number }> = ({ size = 16 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+    <polyline points="15 18 9 12 15 6" />
+  </svg>
+);
 
-  paragraphs.forEach((p) => {
-    const trimmed = p.trim();
-    if (!trimmed) return;
+const IconChevronRight: React.FC<{ size?: number }> = ({ size = 16 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+    <polyline points="9 18 15 12 9 6" />
+  </svg>
+);
 
-    if (blocks.length > 0 && blocks[blocks.length - 1].startsWith('|') && trimmed.startsWith('|')) {
-      blocks[blocks.length - 1] += '\n\n' + trimmed;
-    } else {
-      blocks.push(trimmed);
-    }
-  });
+const IconPlus: React.FC<{ size?: number }> = ({ size = 18 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+    <line x1="12" y1="5" x2="12" y2="19" />
+    <line x1="5" y1="12" x2="19" y2="12" />
+  </svg>
+);
 
-  return blocks.map((b, idx) => ({
-    id: `blk-${idx + 1}`,
-    text: b,
-  }));
-};
+const IconPalette: React.FC<{ size?: number }> = ({ size = 18 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M12 2a10 10 0 1 0 0 20c1.1 0 2-.9 2-2v-.5a2 2 0 0 1 2-2h1.5a4.5 4.5 0 0 0 4.5-4.5C22 6.7 17.5 2 12 2z" />
+    <circle cx="6.5" cy="11.5" r="1.3" fill="currentColor" stroke="none" />
+    <circle cx="9.5" cy="7" r="1.3" fill="currentColor" stroke="none" />
+    <circle cx="14.5" cy="7" r="1.3" fill="currentColor" stroke="none" />
+    <circle cx="17.5" cy="11.5" r="1.3" fill="currentColor" stroke="none" />
+  </svg>
+);
 
-const isMarkdownTableBlock = (text: string): boolean => {
-  const lines = text.trim().split(/\r?\n/).filter(Boolean);
-  return lines.length >= 2 && lines[0].trim().startsWith('|') && lines[1].includes('---');
-};
+const IconTrash: React.FC<{ size?: number }> = ({ size = 18 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+    <polyline points="3 6 5 6 21 6" />
+    <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+    <path d="M10 11v6M14 11v6" />
+    <path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2" />
+  </svg>
+);
 
-const getMarkdownTableRows = (text: string): string[][] =>
-  text
-    .trim()
-    .split(/\r?\n/)
-    .filter((line) => line.trim().startsWith('|') && !/^\s*\|?\s*:?-{3,}/.test(line))
-    .map((line) => line.trim().replace(/^\|\s*|\s*\|$/g, '').split('|').map((cell) => cell.trim()));
+const IconSun: React.FC<{ size?: number }> = ({ size = 18 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="12" cy="12" r="4" />
+    <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
+  </svg>
+);
+
+const IconMoon: React.FC<{ size?: number }> = ({ size = 18 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M21 12.79A9 9 0 1 1 11.21 3a7 7 0 0 0 9.79 9.79z" />
+  </svg>
+);
+
+// Note: IconMic is kept because the "Dictate" button still uses it
+const IconMic: React.FC<{ size?: number }> = ({ size = 18 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="9" y="2" width="6" height="12" rx="3" />
+    <path d="M5 10v1a7 7 0 0 0 14 0v-1" />
+    <line x1="12" y1="19" x2="12" y2="22" />
+    <line x1="8" y1="22" x2="16" y2="22" />
+  </svg>
+);
 
 export const ChatUI: React.FC = () => {
   const [selectedPaletteId, setSelectedPaletteId] = useState<string>(() => {
@@ -1253,8 +1441,18 @@ export const ChatUI: React.FC = () => {
     return localStorage.getItem(LANG_KEY) || 'en-US';
   });
 
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
+    return localStorage.getItem(SIDEBAR_KEY) === 'true';
+  });
+
+  const [showPaletteMenu, setShowPaletteMenu] = useState(false);
+
   const currentPreset = PALETTES[selectedPaletteId] || PALETTES.taylor;
   const activeTheme = currentPreset[mode];
+
+  const isTaylorLight = selectedPaletteId === 'taylor' && mode === 'light';
+  const isBerryLight = selectedPaletteId === 'berry' && mode === 'light';
+  const isMonsoonDark = selectedPaletteId === 'monsoon' && mode === 'dark';
 
   const getCurrentTimeString = () => {
     return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -1297,29 +1495,39 @@ export const ChatUI: React.FC = () => {
   const [audioProgress, setAudioProgress] = useState<number>(0);
   const [audioDuration, setAudioDuration] = useState<number>(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
 
-  const [uploadedDocId, setUploadedDocId] = useState<number | null>(null);
+  const [documents, setDocuments] = useState<UploadedDoc[]>([]);
+
+  const [previewData, setPreviewData] = useState<DocumentPreviewData | null>(null);
+  const [showPreviewModal, setShowPreviewModal] = useState(false);
+
   const [chunks, setChunks] = useState<DocumentChunk[]>([]);
   const [showChunkModal, setShowChunkModal] = useState(false);
   const [isFetchingChunks, setIsFetchingChunks] = useState(false);
-
-  // MARKDOWN VS EXTRACTED TEXT VISUAL COMPARATOR & HOVER SYNC
-  const [showPreviewModal, setShowPreviewModal] = useState(false);
-  const [previewData, setPreviewData] = useState<DocumentPreviewData | null>(null);
-  const [hoveredBlockId, setHoveredBlockId] = useState<string | null>(null);
+  const [chunkDocId, setChunkDocId] = useState<number | null>(null);
 
   const chatEndRef = useRef<HTMLDivElement>(null);
   const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // DOM Refs for sync scroll and hover mapping
-  const leftTextRefs = useRef<Record<string, HTMLDivElement | null>>({});
-  const rightTextRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const toggleSidebar = () => {
+    const next = !sidebarCollapsed;
+    setSidebarCollapsed(next);
+    localStorage.setItem(SIDEBAR_KEY, String(next));
+    if (!next) setShowPaletteMenu(false);
+  };
 
   const handlePaletteChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const newId = e.target.value;
     setSelectedPaletteId(newId);
     localStorage.setItem(PALETTE_KEY, newId);
+  };
+
+  const handlePaletteSelect = (id: string) => {
+    setSelectedPaletteId(id);
+    localStorage.setItem(PALETTE_KEY, id);
+    setShowPaletteMenu(false);
   };
 
   const handleLanguageChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
@@ -1369,22 +1577,33 @@ export const ChatUI: React.FC = () => {
       if (recognitionRef.current) recognitionRef.current.stop();
       if ('speechSynthesis' in window) window.speechSynthesis.cancel();
       if (timerRef.current) clearInterval(timerRef.current);
-      if (previewData?.fileUrl && previewData.fileUrl.startsWith('blob:')) {
-        URL.revokeObjectURL(previewData.fileUrl);
+      if (ttsAudioRef.current) {
+        ttsAudioRef.current.pause();
+        ttsAudioRef.current = null;
       }
+      documents.forEach((d) => {
+        if (d.fileUrl && d.fileUrl.startsWith('blob:')) URL.revokeObjectURL(d.fileUrl);
+      });
     };
-  }, [previewData]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  const handleRightTextHover = (blockId: string | null) => {
-    setHoveredBlockId(blockId);
-    if (blockId && leftTextRefs.current[blockId]) {
-      leftTextRefs.current[blockId]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }
-  };
+  useEffect(() => {
+    if (!showPaletteMenu) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setShowPaletteMenu(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [showPaletteMenu]);
 
   const startNewChat = () => {
     if ('speechSynthesis' in window) window.speechSynthesis.cancel();
     if (timerRef.current) clearInterval(timerRef.current);
+    if (ttsAudioRef.current) {
+      ttsAudioRef.current.pause();
+      ttsAudioRef.current = null;
+    }
     setSpeakingMessageId(null);
 
     const newId = Date.now().toString();
@@ -1398,8 +1617,9 @@ export const ChatUI: React.FC = () => {
     setSessions((prev) => [newSession, ...prev]);
     setCurrentSessionId(newId);
     setMessages([]);
-    setUploadedDocId(null);
+    setDocuments([]);
     setChunks([]);
+    setChunkDocId(null);
     setPreviewData(null);
   };
 
@@ -1435,29 +1655,56 @@ export const ChatUI: React.FC = () => {
     setSessions([freshSession]);
     setCurrentSessionId(freshId);
     setMessages([]);
-    setUploadedDocId(null);
+    setDocuments([]);
     setChunks([]);
+    setChunkDocId(null);
     setPreviewData(null);
   };
 
   const loadSession = (session: ChatSession) => {
     if ('speechSynthesis' in window) window.speechSynthesis.cancel();
     if (timerRef.current) clearInterval(timerRef.current);
+    if (ttsAudioRef.current) {
+      ttsAudioRef.current.pause();
+      ttsAudioRef.current = null;
+    }
     setSpeakingMessageId(null);
     setCurrentSessionId(session.id);
     setMessages(session.messages);
+    setDocuments([]);
+    setChunks([]);
+    setChunkDocId(null);
+    setPreviewData(null);
   };
 
-  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
+  const openPreviewForDoc = (docId: number) => {
+    const doc = documents.find((d) => d.id === docId);
+    if (!doc) {
+      console.warn(`[Preview] No uploaded doc found with id=${docId}`);
+      return;
+    }
 
+    setPreviewData({
+      id: doc.id,
+      fileName: doc.fileName,
+      fileUrl: doc.fileUrl,
+      markdownUrl: doc.markdownUrl,
+      blocks: doc.blocks,
+      pageDimensions: doc.pageDimensions,
+      fullExtractedText: doc.fullExtractedText,
+    });
+    setShowPreviewModal(true);
+  };
+
+  const uploadBlobDirectly = async (blob: Blob, fileName: string) => {
     setIsUploading(true);
+
+    const fileToUpload = new File([blob], fileName, { type: blob.type || 'text/markdown' });
     const formData = new FormData();
-    formData.append('document', file);
+    formData.append('document', fileToUpload);
 
     try {
-      const filePreviewUrl = URL.createObjectURL(file);
+      const filePreviewUrl = URL.createObjectURL(blob);
 
       const response = await fetch('http://localhost:3000/api/upload', {
         method: 'POST',
@@ -1470,15 +1717,25 @@ export const ChatUI: React.FC = () => {
 
       const data = await response.json();
 
-      const docObj = data.document || data;
-      const docId = docObj.id || data.documentId || Date.now();
-      const fileName = docObj.filename || docObj.fileName || file.name;
-      setUploadedDocId(docId);
+      console.log('[ChatUI Upload Response]', {
+        blocksCount: data.blocks?.length,
+        pageDimsKeys: data.pageDimensions ? Object.keys(data.pageDimensions) : null,
+        firstBlockSample: data.blocks?.[0],
+      });
 
-      let parsedBlocks: ExtractedTextBlock[] = data.extractedBlocks || [];
+      const docId = data.documentId || Date.now();
+      const name = data.fileName || fileName;
 
-      if (!parsedBlocks || parsedBlocks.length === 0) {
-        let extractedChunks: DocumentChunk[] = [];
+      const incomingBlocks: ParsedBlock[] = Array.isArray(data.blocks) ? data.blocks : [];
+      const incomingPageDims: Record<number, { width: number; height: number }> =
+        data.pageDimensions && typeof data.pageDimensions === 'object'
+          ? data.pageDimensions
+          : {};
+
+      let extractedChunks: DocumentChunk[] = Array.isArray(data.chunks) ? data.chunks : [];
+      if (extractedChunks.length > 0) {
+        setChunks(extractedChunks);
+      } else {
         try {
           const chunkRes = await fetch(`http://localhost:3000/api/chunks?documentId=${docId}`);
           if (chunkRes.ok) {
@@ -1491,67 +1748,83 @@ export const ChatUI: React.FC = () => {
         } catch (cErr) {
           console.warn('Could not fetch chunks automatically:', cErr);
         }
-
-        if (extractedChunks.length > 0) {
-          parsedBlocks = extractedChunks.map((c, idx) => ({
-            id: `blk-${c.chunkIndex ?? idx + 1}`,
-            text: c.content || '',
-          }));
-        } else {
-          const rawText =
-            data.markdown ||
-            data.fullExtractedText ||
-            data.extractedText ||
-            data.content ||
-            data.text ||
-            '';
-
-          if (rawText.trim().length > 0) {
-            parsedBlocks = parseTextIntoBlocksClient(rawText);
-          }
-        }
       }
 
-      if (parsedBlocks.length === 0) {
-        parsedBlocks = [{ id: 'blk-1', text: '*(No extracted text chunks returned for this document)*' }];
-      }
+      const fullExtractedText =
+        data.markdown || incomingBlocks.map((b) => b.markdown || b.plainValue).join('\n\n');
+
+      const confirmationMessageId = Date.now().toString();
+      const confirmationMessage: Message = {
+        id: confirmationMessageId,
+        sender: 'assistant',
+        text: `📄 **Document Upload Complete!**\n\n**${name}** is ready. Click the **📄 Preview** button below to open it! ✨`,
+        timestamp: getCurrentTimeString(),
+        documentId: docId,
+        fileName: name,
+      };
+
+      const newDoc: UploadedDoc = {
+        id: docId,
+        fileName: name,
+        fileUrl: filePreviewUrl,
+        markdownUrl: data.markdownUrl,
+        blocks: incomingBlocks,
+        pageDimensions: incomingPageDims,
+        fullExtractedText,
+        messageId: confirmationMessageId,
+        uploadedAt: getCurrentTimeString(),
+      };
+      setDocuments((prev) => [...prev, newDoc]);
 
       setPreviewData({
         id: docId,
-        fileName: fileName,
-        fileUrl: data.fileUrl || filePreviewUrl,
+        fileName: name,
+        fileUrl: filePreviewUrl,
         markdownUrl: data.markdownUrl,
-        extractedBlocks: parsedBlocks,
-        fullExtractedText: data.fullExtractedText || parsedBlocks.map((b) => b.text).join('\n\n'),
+        blocks: incomingBlocks,
+        pageDimensions: incomingPageDims,
+        fullExtractedText,
       });
-
       setShowPreviewModal(true);
 
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: Date.now().toString(),
-          sender: 'assistant',
-          text: `📄 **Document Upload Complete!**\n\nClick **👁️ Preview Doc** to launch the Visual Comparator for **${fileName}**! ✨`,
-          timestamp: getCurrentTimeString(),
-        },
-      ]);
+      setMessages((prev) => [...prev, confirmationMessage]);
     } catch (err) {
-      console.error('[File Upload Error]:', err);
+      console.error('[Blob Upload Error]:', err);
       alert('Failed to upload document. Make sure your Express server is running on http://localhost:3000!');
     } finally {
       setIsUploading(false);
-      if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
 
-  const fetchDocumentChunks = async () => {
+  const handleCreateAndUploadBlob = () => {
+    const markdownContent = `# Dynamic Blob Document\n\nGenerated on ${new Date().toLocaleString()}\n\n| Item | Status |\n| --- | --- |\n| Blob Upload | Active 🚀 |\n\nThis markdown document was generated as a Blob in JavaScript!`;
+    const generatedBlob = new Blob([markdownContent], { type: 'text/markdown' });
+    uploadBlobDirectly(generatedBlob, `generated_doc_${Date.now()}.md`);
+  };
+
+  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    await uploadBlobDirectly(file, file.name);
+
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const fetchDocumentChunks = async (docIdOverride?: number) => {
     setIsFetchingChunks(true);
     setShowChunkModal(true);
 
+    const activeDocId =
+      docIdOverride ??
+      chunkDocId ??
+      (documents.length > 0 ? documents[documents.length - 1].id : null);
+
+    setChunkDocId(activeDocId);
+
     try {
-      const url = uploadedDocId
-        ? `http://localhost:3000/api/chunks?documentId=${uploadedDocId}`
+      const url = activeDocId
+        ? `http://localhost:3000/api/chunks?documentId=${activeDocId}`
         : `http://localhost:3000/api/chunks`;
 
       const res = await fetch(url);
@@ -1569,7 +1842,7 @@ export const ChatUI: React.FC = () => {
         setChunks([
           {
             id: 1,
-            documentId: uploadedDocId || 1,
+            documentId: activeDocId || 1,
             chunkIndex: 0,
             content: 'No chunks generated for this file yet.',
           },
@@ -1579,6 +1852,14 @@ export const ChatUI: React.FC = () => {
       console.error('[Fetch Chunks Error]:', err);
     } finally {
       setIsFetchingChunks(false);
+    }
+  };
+
+  const handleChunkDocChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const newId = Number(e.target.value);
+    if (!Number.isNaN(newId) && newId > 0) {
+      setChunkDocId(newId);
+      void fetchDocumentChunks(newId);
     }
   };
 
@@ -1616,74 +1897,250 @@ export const ChatUI: React.FC = () => {
     recognition.start();
   };
 
-  const toggleSpeakResponse = (messageId: string, text: string) => {
-    if (!('speechSynthesis' in window)) return;
+  // ============================================================
+  // 🔊 TTS: Urdu + other languages via Google Translate TTS fallback.
+  //    The browser's built-in speechSynthesis often has no Urdu voice
+  //    installed, so we route Urdu (and any language without a
+  //    matching browser voice) through Google's free TTS endpoint.
+  // ============================================================
+  const toggleSpeakResponse = (messageId: string, text: string, audioUrl?: string) => {
+    // 1. Backend-generated audio URL takes priority.
+    if (audioUrl) {
+      if (speakingMessageId === messageId) {
+        setSpeakingMessageId(null);
+        return;
+      }
+      const audio = new Audio(audioUrl);
+      audio.onended = () => setSpeakingMessageId(null);
+      audio.onerror = () => setSpeakingMessageId(null);
+      setSpeakingMessageId(messageId);
+      void audio.play();
+      return;
+    }
 
+    // 2. If this message is currently being spoken, stop it.
     if (speakingMessageId === messageId) {
-      window.speechSynthesis.cancel();
+      if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+      if (ttsAudioRef.current) {
+        ttsAudioRef.current.pause();
+        ttsAudioRef.current.currentTime = 0;
+        ttsAudioRef.current = null;
+      }
       if (timerRef.current) clearInterval(timerRef.current);
       setSpeakingMessageId(null);
       setAudioProgress(0);
       return;
     }
 
-    window.speechSynthesis.cancel();
+    // 3. Stop any currently playing audio before starting a new one.
+    if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+    if (ttsAudioRef.current) {
+      ttsAudioRef.current.pause();
+      ttsAudioRef.current = null;
+    }
     if (timerRef.current) clearInterval(timerRef.current);
 
-    const cleanText = text.replace(/[*_#`~|]/g, '');
+    const cleanText = text.replace(/[*_#`~|]/g, '').replace(/\s+/g, ' ').trim();
     const wordCount = cleanText.split(/\s+/).length;
     const estimatedSecs = Math.max(Math.round((wordCount / 150) * 60), 3);
     setAudioDuration(estimatedSecs);
     setAudioProgress(0);
 
-    const utterance = new SpeechSynthesisUtterance(cleanText);
-    utterance.lang = selectedLanguage;
+    const textIsUrdu = isUrduText(cleanText);
+    const effectiveLang = textIsUrdu ? 'ur-PK' : getLanguageForTTS(selectedLanguage);
 
-    const langPrefix = selectedLanguage.split('-')[0].toLowerCase();
-    const setMatchingVoice = () => {
+    console.log(`[TTS] Speaking. Text is Urdu: ${textIsUrdu}. Target lang: ${effectiveLang}`);
+
+    // ---- Google Translate TTS (used for Urdu + languages with no browser voice) ----
+    const useGoogleTTS = async () => {
+      try {
+        const googleLangMap: Record<string, string> = {
+          'en-US': 'en',
+          'ur-PK': 'ur',
+          'es-ES': 'es',
+          'fr-FR': 'fr',
+          'de-DE': 'de',
+          'zh-CN': 'zh-CN',
+        };
+        const googleLang = googleLangMap[effectiveLang] || 'en';
+
+        // Google Translate TTS has a ~200 char limit per request.
+        const chunkSize = 180;
+        const chunks: string[] = [];
+        let remaining = cleanText;
+        while (remaining.length > 0) {
+          if (remaining.length <= chunkSize) {
+            chunks.push(remaining);
+            break;
+          }
+          let splitAt = remaining.lastIndexOf(' ', chunkSize);
+          if (splitAt === -1) splitAt = chunkSize;
+          chunks.push(remaining.slice(0, splitAt).trim());
+          remaining = remaining.slice(splitAt).trim();
+        }
+
+        console.log(`[TTS] Using Google Translate TTS in "${googleLang}" (${chunks.length} chunk(s))`);
+
+        setSpeakingMessageId(messageId);
+
+        timerRef.current = setInterval(() => {
+          setAudioProgress((prev) => {
+            if (prev >= estimatedSecs) {
+              if (timerRef.current) clearInterval(timerRef.current);
+              return estimatedSecs;
+            }
+            return prev + 1;
+          });
+        }, 1000);
+
+        for (let i = 0; i < chunks.length; i++) {
+          const chunk = chunks[i];
+          const url = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(
+            chunk
+          )}&tl=${googleLang}&client=tw-ob`;
+
+          const audio = new Audio(url);
+          audio.crossOrigin = 'anonymous';
+          ttsAudioRef.current = audio;
+
+          await new Promise<void>((resolve, reject) => {
+            audio.onended = () => resolve();
+            audio.onerror = (e) => reject(e);
+            audio.play().catch(reject);
+          });
+        }
+
+        if (timerRef.current) clearInterval(timerRef.current);
+        setSpeakingMessageId(null);
+        setAudioProgress(0);
+        ttsAudioRef.current = null;
+      } catch (err) {
+        console.error('[TTS] Google TTS failed, falling back to browser speechSynthesis:', err);
+        ttsAudioRef.current = null;
+        fallbackToBrowserTTS();
+      }
+    };
+
+    // ---- Browser SpeechSynthesis fallback ----
+    const fallbackToBrowserTTS = () => {
+      if (!('speechSynthesis' in window)) {
+        alert('Text-to-Speech is not supported in this browser.');
+        setSpeakingMessageId(null);
+        if (timerRef.current) clearInterval(timerRef.current);
+        return;
+      }
+
+      const pickVoiceAndSpeak = () => {
+        const voices = window.speechSynthesis.getVoices();
+        let chosenVoice: SpeechSynthesisVoice | undefined;
+
+        if (textIsUrdu) {
+          chosenVoice = voices.find(
+            (v) =>
+              v.lang.toLowerCase().startsWith('ur') ||
+              v.name.toLowerCase().includes('urdu')
+          );
+          if (!chosenVoice) {
+            chosenVoice = voices.find(
+              (v) =>
+                v.lang.toLowerCase().startsWith('hi') ||
+                v.name.toLowerCase().includes('hindi')
+            );
+          }
+          if (!chosenVoice) {
+            chosenVoice = voices.find(
+              (v) => /ar|fa|ur|hi/i.test(v.lang) || /arabic|persian|urdu|hindi/i.test(v.name)
+            );
+          }
+        } else {
+          const langPrefix = effectiveLang.split('-')[0].toLowerCase();
+          chosenVoice = voices.find(
+            (v) =>
+              v.lang.toLowerCase().replace('_', '-') === effectiveLang.toLowerCase() ||
+              v.lang.toLowerCase().startsWith(langPrefix)
+          );
+        }
+
+        const utterance = new SpeechSynthesisUtterance(cleanText);
+        utterance.lang = effectiveLang;
+
+        if (chosenVoice) {
+          utterance.voice = chosenVoice;
+          console.log(`[TTS] Browser fallback using voice: "${chosenVoice.name}" (${chosenVoice.lang})`);
+        } else {
+          console.warn(`[TTS] No matching browser voice for ${effectiveLang}, using default.`);
+        }
+
+        utterance.rate = textIsUrdu ? 0.85 : 0.95;
+        utterance.pitch = 1.0;
+
+        utterance.onstart = () => {
+          setSpeakingMessageId(messageId);
+          timerRef.current = setInterval(() => {
+            setAudioProgress((prev) => {
+              if (prev >= estimatedSecs) {
+                if (timerRef.current) clearInterval(timerRef.current);
+                return estimatedSecs;
+              }
+              return prev + 1;
+            });
+          }, 1000);
+        };
+
+        utterance.onend = () => {
+          if (timerRef.current) clearInterval(timerRef.current);
+          setSpeakingMessageId(null);
+          setAudioProgress(0);
+        };
+
+        utterance.onerror = () => {
+          if (timerRef.current) clearInterval(timerRef.current);
+          setSpeakingMessageId(null);
+          setAudioProgress(0);
+        };
+
+        window.speechSynthesis.speak(utterance);
+      };
+
       const voices = window.speechSynthesis.getVoices();
-      const matchingVoice = voices.find(
+      if (voices.length === 0) {
+        const onVoicesReady = () => {
+          window.speechSynthesis.onvoiceschanged = null;
+          pickVoiceAndSpeak();
+        };
+        window.speechSynthesis.onvoiceschanged = onVoicesReady;
+        setTimeout(() => {
+          if (window.speechSynthesis.getVoices().length > 0) {
+            window.speechSynthesis.onvoiceschanged = null;
+            pickVoiceAndSpeak();
+          }
+        }, 500);
+      } else {
+        pickVoiceAndSpeak();
+      }
+    };
+
+    // ---- Decision: route to the right TTS engine ----
+    if (textIsUrdu) {
+      // Urdu: always use Google TTS (browser voices rarely exist).
+      void useGoogleTTS();
+    } else {
+      // Non-Urdu: try the browser first if a matching voice exists.
+      const voices = window.speechSynthesis.getVoices();
+      const langPrefix = effectiveLang.split('-')[0].toLowerCase();
+      const hasMatchingVoice = voices.some(
         (v) =>
-          v.lang.toLowerCase().replace('_', '-') === selectedLanguage.toLowerCase() ||
+          v.lang.toLowerCase().replace('_', '-') === effectiveLang.toLowerCase() ||
           v.lang.toLowerCase().startsWith(langPrefix)
       );
-      if (matchingVoice) utterance.voice = matchingVoice;
-    };
 
-    setMatchingVoice();
-    if (window.speechSynthesis.onvoiceschanged !== undefined) {
-      window.speechSynthesis.onvoiceschanged = setMatchingVoice;
+      if (hasMatchingVoice) {
+        fallbackToBrowserTTS();
+      } else {
+        console.log(`[TTS] No browser voice for ${effectiveLang}, using Google TTS.`);
+        void useGoogleTTS();
+      }
     }
-
-    utterance.rate = 0.95;
-    utterance.pitch = 1.0;
-
-    utterance.onstart = () => {
-      setSpeakingMessageId(messageId);
-      timerRef.current = setInterval(() => {
-        setAudioProgress((prev) => {
-          if (prev >= estimatedSecs) {
-            if (timerRef.current) clearInterval(timerRef.current);
-            return estimatedSecs;
-          }
-          return prev + 1;
-        });
-      }, 1000);
-    };
-
-    utterance.onend = () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-      setSpeakingMessageId(null);
-      setAudioProgress(0);
-    };
-
-    utterance.onerror = () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-      setSpeakingMessageId(null);
-      setAudioProgress(0);
-    };
-
-    window.speechSynthesis.speak(utterance);
   };
 
   const formatSeconds = (secs: number) => {
@@ -1741,7 +2198,7 @@ export const ChatUI: React.FC = () => {
         {
           id: (Date.now() + 1).toString(),
           sender: 'assistant',
-          text: 'Backend connection error. Please verify the Express server is running on port 3000! 💔',
+          text: 'Backend connection error. Please verify the Express server is running on port 3000! 🔌',
           timestamp: getCurrentTimeString(),
         },
       ]);
@@ -1751,6 +2208,94 @@ export const ChatUI: React.FC = () => {
   };
 
   const isTaylorTheme = selectedPaletteId === 'taylor';
+
+  const getChatBoxStyles = (): React.CSSProperties => {
+    const baseStyles: React.CSSProperties = {
+      width: '100%',
+      border: `2px solid ${activeTheme.chatBoxBorder}`,
+      borderRadius: '14px',
+      height: '480px',
+      overflowY: 'auto',
+      overflowX: 'hidden',
+      padding: '24px',
+      boxSizing: 'border-box',
+      transition: 'all 0.3s ease',
+    };
+
+    if (isTaylorLight) {
+      return {
+        ...baseStyles,
+        backgroundColor: activeTheme.chatBoxBg,
+        backdropFilter: 'blur(20px) saturate(180%)',
+        WebkitBackdropFilter: 'blur(20px) saturate(180%)',
+        background:
+          'linear-gradient(135deg, rgba(255, 255, 255, 0.4) 0%, rgba(252, 231, 243, 0.3) 50%, rgba(224, 242, 254, 0.4) 100%)',
+        boxShadow: `
+          0 8px 32px rgba(244, 114, 182, 0.2),
+          0 4px 16px rgba(56, 189, 248, 0.15),
+          inset 0 1px 1px rgba(255, 255, 255, 0.8),
+          inset 0 -1px 1px rgba(244, 114, 182, 0.1)
+        `,
+        border: '1px solid rgba(255, 255, 255, 0.6)',
+      };
+    }
+
+    if (isBerryLight) {
+      return {
+        ...baseStyles,
+        backgroundColor: activeTheme.chatBoxBg,
+        backdropFilter: 'blur(20px) saturate(180%)',
+        WebkitBackdropFilter: 'blur(20px) saturate(180%)',
+        background:
+          'linear-gradient(135deg, rgba(255, 255, 255, 0.4) 0%, rgba(253, 232, 240, 0.35) 50%, rgba(248, 208, 224, 0.4) 100%)',
+        boxShadow: `
+          0 8px 32px rgba(160, 64, 109, 0.2),
+          0 4px 16px rgba(217, 83, 127, 0.15),
+          inset 0 1px 1px rgba(255, 255, 255, 0.8),
+          inset 0 -1px 1px rgba(160, 64, 109, 0.1)
+        `,
+        border: '1px solid rgba(255, 255, 255, 0.6)',
+      };
+    }
+
+    if (isMonsoonDark) {
+      return {
+        ...baseStyles,
+        background: 'rgba(15, 30, 45, 0.1)',
+        backdropFilter: 'blur(25px) saturate(150%) brightness(1.1)',
+        WebkitBackdropFilter: 'blur(25px) saturate(150%) brightness(1.1)',
+        boxShadow: `
+          0 12px 40px rgba(2, 132, 199, 0.3),
+          0 4px 18px rgba(56, 189, 248, 0.2),
+          inset 0 1px 1px rgba(224, 242, 254, 0.4),
+          inset 0 -3px 8px rgba(2, 132, 199, 0.2),
+          inset 0 0 60px rgba(125, 211, 252, 0.1)
+        `,
+        border: '1px solid rgba(186, 230, 253, 0.4)',
+        position: 'relative',
+        overflow: 'hidden',
+        borderTopColor: 'rgba(224, 242, 254, 0.6)',
+      };
+    }
+
+    if (isTaylorTheme && mode === 'dark') {
+      return {
+        ...baseStyles,
+        backgroundColor: activeTheme.chatBoxBg,
+        backdropFilter: 'blur(12px)',
+        WebkitBackdropFilter: 'blur(12px)',
+        boxShadow: '0 0 25px rgba(60, 94, 66, 0.35)',
+      };
+    }
+
+    return {
+      ...baseStyles,
+      backgroundColor: activeTheme.chatBoxBg,
+      backdropFilter: 'blur(12px)',
+      WebkitBackdropFilter: 'blur(12px)',
+      boxShadow: '0 6px 18px rgba(0, 0, 0, 0.12)',
+    };
+  };
 
   return (
     <div
@@ -1791,21 +2336,20 @@ export const ChatUI: React.FC = () => {
           scrollbar-color: var(--sb-thumb) var(--sb-track);
         }
         
-        /* FULL GFM MARKDOWN TABLE AND FORMATTING STYLES */
         .markdown-wrapper table {
-          width: 100%;
           display: table;
           border-collapse: collapse;
           margin: 16px 0;
           font-size: 13.5px;
           background-color: rgba(0, 0, 0, 0.25);
           border-radius: 6px;
-          overflow: hidden;
+          min-width: 100%;
         }
         .markdown-wrapper th, .markdown-wrapper td {
           border: 1px solid rgba(255, 255, 255, 0.22);
           padding: 10px 14px;
           text-align: left;
+          vertical-align: top;
         }
         .markdown-wrapper th {
           background-color: rgba(255, 255, 255, 0.15);
@@ -1817,140 +2361,380 @@ export const ChatUI: React.FC = () => {
         .markdown-wrapper tr:nth-child(even) {
           background-color: rgba(255, 255, 255, 0.05);
         }
+        .markdown-wrapper pre {
+          overflow-x: auto;
+          max-width: 100%;
+        }
+        .markdown-wrapper img {
+          max-width: 100%;
+          height: auto;
+        }
       `}</style>
 
       <SeasonalParticles effect={currentPreset.effect} mode={mode} />
 
+      {sidebarCollapsed && showPaletteMenu && (
+        <div
+          onClick={() => setShowPaletteMenu(false)}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            backgroundColor: 'rgba(0,0,0,0.35)',
+            zIndex: 9998,
+            cursor: 'default',
+          }}
+        />
+      )}
+
       {/* LEFT SIDEBAR */}
       <div
         style={{
-          width: '280px',
+          width: sidebarCollapsed ? '64px' : '280px',
           backgroundColor: activeTheme.bgSidebar,
           borderRight: `1px solid ${activeTheme.sidebarBorder}`,
           display: 'flex',
           flexDirection: 'column',
-          padding: '18px',
+          padding: sidebarCollapsed ? '14px 8px' : '18px',
           boxSizing: 'border-box',
-          zIndex: 2,
-          transition: 'all 0.3s ease',
+          zIndex: sidebarCollapsed && showPaletteMenu ? 9999 : 2,
+          transition: 'width 0.25s ease, padding 0.25s ease',
+          position: 'relative',
+          overflow: 'visible',
         }}
       >
-        <button
-          onClick={startNewChat}
-          style={{
-            padding: '12px',
-            borderRadius: '8px',
-            border: 'none',
-            backgroundColor: activeTheme.newChatBtn,
-            color: activeTheme.newChatBtnText,
-            fontWeight: 'bold',
-            cursor: 'pointer',
-            marginBottom: '10px',
-            fontSize: '14px',
-            boxShadow: '0 3px 8px rgba(0,0,0,0.15)',
-          }}
-        >
-          + New Chat
-        </button>
-
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '8px 4px 14px 4px' }}>
-          <h4 style={{ color: activeTheme.sidebarTitle, margin: 0, fontSize: '11px', textTransform: 'uppercase', fontWeight: 'bold' }}>
-            Chat History
-          </h4>
-          <button
-            onClick={clearAllHistory}
-            style={{ backgroundColor: 'transparent', border: 'none', color: activeTheme.sidebarTitle, cursor: 'pointer', fontSize: '11px', fontWeight: 'bold', opacity: 0.8 }}
-          >
-            Clear All
-          </button>
-        </div>
-
-        <div style={{ flex: 1, overflowY: 'auto' }}>
-          {sessions.map((session) => {
-            const isActive = session.id === currentSessionId;
-            return (
-              <div
-                key={session.id}
-                onClick={() => loadSession(session)}
+        {!sidebarCollapsed ? (
+          <>
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                marginBottom: '14px',
+              }}
+            >
+              <span
                 style={{
-                  padding: '10px 12px',
-                  borderRadius: '8px',
-                  marginBottom: '8px',
-                  backgroundColor: isActive ? activeTheme.activeSessionBg : 'transparent',
-                  border: isActive ? `1px solid ${activeTheme.activeSessionBorder}` : '1px solid transparent',
-                  color: isActive ? activeTheme.activeSessionText : activeTheme.sidebarText,
-                  cursor: 'pointer',
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
+                  color: activeTheme.sidebarTitle,
+                  fontSize: '11px',
+                  fontWeight: 'bold',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.5px',
                 }}
               >
-                <div style={{ overflow: 'hidden', paddingRight: '8px' }}>
-                  <div style={{ fontWeight: '600', fontSize: '13px', marginBottom: '2px', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
-                    💬 {session.title}
+                Menu
+              </span>
+              <button
+                onClick={toggleSidebar}
+                title="Collapse sidebar"
+                style={{
+                  backgroundColor: 'transparent',
+                  border: `1px solid ${activeTheme.sidebarBorder}`,
+                  borderRadius: '6px',
+                  color: activeTheme.sidebarText,
+                  cursor: 'pointer',
+                  padding: '4px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  width: '28px',
+                  height: '28px',
+                }}
+              >
+                <IconChevronLeft size={16} />
+              </button>
+            </div>
+
+            <button
+              onClick={startNewChat}
+              style={{
+                padding: '12px',
+                borderRadius: '8px',
+                border: 'none',
+                backgroundColor: activeTheme.newChatBtn,
+                color: activeTheme.newChatBtnText,
+                fontWeight: 'bold',
+                cursor: 'pointer',
+                marginBottom: '10px',
+                fontSize: '14px',
+                boxShadow: '0 3px 8px rgba(0,0,0,0.15)',
+              }}
+            >
+              + New Chat
+            </button>
+
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '8px 4px 14px 4px' }}>
+              <h4 style={{ color: activeTheme.sidebarTitle, margin: 0, fontSize: '11px', textTransform: 'uppercase', fontWeight: 'bold' }}>
+                Chat History
+              </h4>
+              <button
+                onClick={clearAllHistory}
+                style={{ backgroundColor: 'transparent', border: 'none', color: activeTheme.sidebarTitle, cursor: 'pointer', fontSize: '11px', fontWeight: 'bold', opacity: 0.8 }}
+              >
+                Clear All
+              </button>
+            </div>
+
+            <div style={{ flex: 1, overflowY: 'auto' }}>
+              {sessions.map((session) => {
+                const isActive = session.id === currentSessionId;
+                return (
+                  <div
+                    key={session.id}
+                    onClick={() => loadSession(session)}
+                    style={{
+                      padding: '10px 12px',
+                      borderRadius: '8px',
+                      marginBottom: '8px',
+                      backgroundColor: isActive ? activeTheme.activeSessionBg : 'transparent',
+                      border: isActive ? `1px solid ${activeTheme.activeSessionBorder}` : '1px solid transparent',
+                      color: isActive ? activeTheme.activeSessionText : activeTheme.sidebarText,
+                      cursor: 'pointer',
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                    }}
+                  >
+                    <div style={{ overflow: 'hidden', paddingRight: '8px' }}>
+                      <div style={{ fontWeight: '600', fontSize: '13px', marginBottom: '2px', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+                        💬 {session.title}
+                      </div>
+                      <div style={{ fontSize: '10px', opacity: 0.8 }}>{session.createdAt}</div>
+                    </div>
+                    <button
+                      onClick={(e) => deleteSession(session.id, e)}
+                      style={{ backgroundColor: 'transparent', border: 'none', color: isActive ? activeTheme.activeSessionText : activeTheme.sidebarText, cursor: 'pointer', fontSize: '12px', opacity: 0.6 }}
+                    >
+                      🗑️
+                    </button>
                   </div>
-                  <div style={{ fontSize: '10px', opacity: 0.8 }}>{session.createdAt}</div>
-                </div>
-                <button
-                  onClick={(e) => deleteSession(session.id, e)}
-                  style={{ backgroundColor: 'transparent', border: 'none', color: isActive ? activeTheme.activeSessionText : activeTheme.sidebarText, cursor: 'pointer', fontSize: '12px', opacity: 0.6 }}
-                >
-                  🗑️
-                </button>
-              </div>
-            );
-          })}
-        </div>
+                );
+              })}
+            </div>
 
-        <div style={{ marginTop: 'auto', paddingTop: '12px', borderTop: `1px solid ${activeTheme.sidebarBorder}` }}>
-          <label style={{ color: activeTheme.sidebarTitle, fontSize: '11px', fontWeight: 'bold', display: 'block', marginBottom: '6px', textTransform: 'uppercase' }}>
-            🎨 Color Scheme
-          </label>
-          <select
-            value={selectedPaletteId}
-            onChange={handlePaletteChange}
-            style={{
-              width: '100%',
-              padding: '10px',
-              borderRadius: '8px',
-              border: `1px solid ${activeTheme.sidebarBorder}`,
-              backgroundColor: activeTheme.activeSessionBg,
-              color: activeTheme.activeSessionText,
-              fontWeight: 'bold',
-              fontSize: '13px',
-              cursor: 'pointer',
-              outline: 'none',
-              marginBottom: '10px',
-            }}
-          >
-            {Object.values(PALETTES).map((p) => (
-              <option key={p.id} value={p.id} style={{ backgroundColor: '#ffffff', color: '#1d2630' }}>
-                {p.name}
-              </option>
-            ))}
-          </select>
+            <div style={{ marginTop: 'auto', paddingTop: '12px', borderTop: `1px solid ${activeTheme.sidebarBorder}` }}>
+              <label style={{ color: activeTheme.sidebarTitle, fontSize: '11px', fontWeight: 'bold', display: 'block', marginBottom: '6px', textTransform: 'uppercase' }}>
+                🎨 Color Scheme
+              </label>
+              <select
+                value={selectedPaletteId}
+                onChange={handlePaletteChange}
+                style={{
+                  width: '100%',
+                  padding: '10px',
+                  borderRadius: '8px',
+                  border: `1px solid ${activeTheme.sidebarBorder}`,
+                  backgroundColor: activeTheme.activeSessionBg,
+                  color: activeTheme.activeSessionText,
+                  fontWeight: 'bold',
+                  fontSize: '13px',
+                  cursor: 'pointer',
+                  outline: 'none',
+                  marginBottom: '10px',
+                }}
+              >
+                {Object.values(PALETTES).map((p) => (
+                  <option key={p.id} value={p.id} style={{ backgroundColor: '#ffffff', color: '#1d2630' }}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
 
-          <button
-            onClick={toggleMode}
+              <button
+                onClick={toggleMode}
+                style={{
+                  width: '100%',
+                  padding: '10px',
+                  borderRadius: '8px',
+                  border: `1px solid ${activeTheme.sidebarBorder}`,
+                  backgroundColor: activeTheme.activeSessionBg,
+                  color: activeTheme.activeSessionText,
+                  fontWeight: 'bold',
+                  fontSize: '13px',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '6px',
+                }}
+              >
+                {mode === 'dark' ? '☀️ Light Mode' : '🌙 Dark Mode'}
+              </button>
+            </div>
+          </>
+        ) : (
+          <div
             style={{
-              width: '100%',
-              padding: '10px',
-              borderRadius: '8px',
-              border: `1px solid ${activeTheme.sidebarBorder}`,
-              backgroundColor: activeTheme.activeSessionBg,
-              color: activeTheme.activeSessionText,
-              fontWeight: 'bold',
-              fontSize: '13px',
-              cursor: 'pointer',
               display: 'flex',
+              flexDirection: 'column',
               alignItems: 'center',
-              justifyContent: 'center',
-              gap: '6px',
+              gap: '10px',
+              height: '100%',
             }}
           >
-            {mode === 'dark' ? '☀️ Light Mode' : '🌙 Dark Mode'}
-          </button>
-        </div>
+            <button
+              onClick={toggleSidebar}
+              title="Expand sidebar"
+              style={{
+                backgroundColor: 'transparent',
+                border: `1px solid ${activeTheme.sidebarBorder}`,
+                borderRadius: '8px',
+                color: activeTheme.sidebarText,
+                cursor: 'pointer',
+                padding: '6px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: '36px',
+                height: '36px',
+                marginBottom: '4px',
+              }}
+            >
+              <IconChevronRight size={16} />
+            </button>
+
+            <button
+              onClick={startNewChat}
+              title="New Chat"
+              style={{
+                backgroundColor: activeTheme.newChatBtn,
+                color: activeTheme.newChatBtnText,
+                border: 'none',
+                borderRadius: '10px',
+                cursor: 'pointer',
+                padding: '8px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: '40px',
+                height: '40px',
+                boxShadow: '0 3px 8px rgba(0,0,0,0.15)',
+              }}
+            >
+              <IconPlus size={18} />
+            </button>
+
+            <div style={{ position: 'relative', zIndex: sidebarCollapsed && showPaletteMenu ? 10000 : 'auto' }}>
+              <button
+                onClick={() => setShowPaletteMenu((v) => !v)}
+                title="Color Scheme"
+                style={{
+                  backgroundColor: showPaletteMenu ? activeTheme.newChatBtn : activeTheme.activeSessionBg,
+                  color: showPaletteMenu ? activeTheme.newChatBtnText : activeTheme.sidebarText,
+                  border: `1px solid ${activeTheme.sidebarBorder}`,
+                  borderRadius: '10px',
+                  cursor: 'pointer',
+                  padding: '8px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  width: '40px',
+                  height: '40px',
+                }}
+              >
+                <IconPalette size={18} />
+              </button>
+
+              {showPaletteMenu && (
+                <div
+                  style={{
+                    position: 'absolute',
+                    left: '52px',
+                    top: 0,
+                    width: '240px',
+                    maxHeight: '380px',
+                    overflowY: 'auto',
+                    backgroundColor: activeTheme.bgSidebar,
+                    border: `1px solid ${activeTheme.sidebarBorder}`,
+                    borderRadius: '10px',
+                    padding: '8px',
+                    boxShadow: '0 8px 24px rgba(0,0,0,0.45)',
+                    zIndex: 10000,
+                  }}
+                >
+                  <div
+                    style={{
+                      color: activeTheme.sidebarTitle,
+                      fontSize: '10px',
+                      fontWeight: 'bold',
+                      textTransform: 'uppercase',
+                      padding: '4px 8px 6px 8px',
+                      letterSpacing: '0.5px',
+                    }}
+                  >
+                    🎨 Color Scheme
+                  </div>
+                  {Object.values(PALETTES).map((p) => {
+                    const isSel = p.id === selectedPaletteId;
+                    return (
+                      <button
+                        key={p.id}
+                        onClick={() => handlePaletteSelect(p.id)}
+                        style={{
+                          display: 'block',
+                          width: '100%',
+                          textAlign: 'left',
+                          padding: '8px 10px',
+                          borderRadius: '6px',
+                          border: 'none',
+                          backgroundColor: isSel ? activeTheme.activeSessionBg : 'transparent',
+                          color: isSel ? activeTheme.activeSessionText : activeTheme.sidebarText,
+                          cursor: 'pointer',
+                          fontSize: '12.5px',
+                          marginBottom: '2px',
+                          fontWeight: isSel ? 'bold' : 'normal',
+                        }}
+                      >
+                        {p.name}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            <button
+              onClick={toggleMode}
+              title={mode === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+              style={{
+                backgroundColor: activeTheme.activeSessionBg,
+                color: activeTheme.sidebarText,
+                border: `1px solid ${activeTheme.sidebarBorder}`,
+                borderRadius: '10px',
+                cursor: 'pointer',
+                padding: '8px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: '40px',
+                height: '40px',
+              }}
+            >
+              {mode === 'dark' ? <IconSun size={18} /> : <IconMoon size={18} />}
+            </button>
+
+            <button
+              onClick={clearAllHistory}
+              title="Clear All History"
+              style={{
+                marginTop: 'auto',
+                backgroundColor: 'transparent',
+                color: activeTheme.sidebarText,
+                border: `1px solid ${activeTheme.sidebarBorder}`,
+                borderRadius: '10px',
+                cursor: 'pointer',
+                padding: '8px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: '40px',
+                height: '40px',
+                opacity: 0.8,
+              }}
+            >
+              <IconTrash size={18} />
+            </button>
+          </div>
+        )}
       </div>
 
       {/* MAIN RIGHT AREA */}
@@ -1964,9 +2748,10 @@ export const ChatUI: React.FC = () => {
           padding: '24px',
           boxSizing: 'border-box',
           zIndex: 2,
+          minWidth: 0,
         }}
       >
-        <div style={{ width: '100%', maxWidth: '850px' }}>
+        <div style={{ width: '100%', maxWidth: '850px', minWidth: 0 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
             <div style={{ width: '160px' }} />
             <h2
@@ -2008,108 +2793,212 @@ export const ChatUI: React.FC = () => {
             </div>
           </div>
 
+          {/* WRAPPER: chat box + right-side button rail */}
           <div
-            className="markdown-wrapper"
             style={{
-              border: `2px solid ${activeTheme.chatBoxBorder}`,
-              borderRadius: '14px',
-              height: '480px',
-              overflowY: 'auto',
-              padding: '24px',
+              position: 'relative',
               marginBottom: '18px',
-              backgroundColor: activeTheme.chatBoxBg,
-              backdropFilter: 'blur(12px)',
-              boxShadow: isTaylorTheme
-                ? mode === 'light'
-                  ? '0 0 25px rgba(244, 114, 182, 0.45)'
-                  : '0 0 25px rgba(60, 94, 66, 0.35)'
-                : '0 6px 18px rgba(0, 0, 0, 0.12)',
-              transition: 'all 0.3s ease',
             }}
           >
-            {messages.length === 0 ? (
-              <p style={{ color: activeTheme.sidebarTitle, textAlign: 'center', marginTop: '180px', fontStyle: 'italic' }}>
-                Ask a question, upload a document, or tap speak to begin! 🎧
-              </p>
-            ) : (
-              messages.map((msg) => (
-                <div key={msg.id} style={{ textAlign: msg.sender === 'user' ? 'right' : 'left', margin: '14px 0' }}>
-                  <div
-                    style={{
-                      display: 'inline-block',
-                      padding: '14px 18px',
-                      borderRadius: '14px',
-                      backgroundColor: msg.sender === 'user' ? activeTheme.userBubbleBg : activeTheme.assistantBubbleBg,
-                      color: msg.sender === 'user' ? activeTheme.userBubbleText : activeTheme.assistantBubbleText,
-                      fontSize: '15px',
-                      lineHeight: '1.5',
-                      maxWidth: '85%',
-                      textAlign: 'left',
-                      wordBreak: 'break-word',
-                    }}
-                  >
-                    {msg.sender === 'assistant' ? (
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.text}</ReactMarkdown>
-                    ) : (
-                      msg.text
-                    )}
+            <div
+              className="markdown-wrapper"
+              style={getChatBoxStyles()}
+            >
+              {isMonsoonDark && <FrostedRainOverlay />}
 
-                    {msg.sender === 'assistant' && (
-                      <div style={{ marginTop: '10px', paddingTop: '8px', borderTop: `1px solid ${activeTheme.sidebarBorder}` }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', marginBottom: speakingMessageId === msg.id ? '8px' : '0' }}>
-                          <button
-                            onClick={() => toggleSpeakResponse(msg.id, msg.text)}
-                            style={{
-                              backgroundColor: speakingMessageId === msg.id ? activeTheme.newChatBtn : 'transparent',
-                              border: 'none',
-                              color: speakingMessageId === msg.id ? activeTheme.newChatBtnText : activeTheme.newChatBtn,
-                              borderRadius: '4px',
-                              cursor: 'pointer',
-                              fontSize: '12px',
-                              fontWeight: 'bold',
-                              padding: speakingMessageId === msg.id ? '4px 10px' : '0',
+              <div style={{ position: 'relative', zIndex: 1, minWidth: 0, width: '100%' }}>
+                {messages.length === 0 ? (
+                  <p style={{ color: activeTheme.sidebarTitle, textAlign: 'center', marginTop: '180px', fontStyle: 'italic' }}>
+                    Ask a question, upload a document, or tap speak to begin! 🎧
+                  </p>
+                ) : (
+                  messages.map((msg) => (
+                    <div key={msg.id} style={{ textAlign: msg.sender === 'user' ? 'right' : 'left', margin: '14px 0' }}>
+                      <div
+                        style={{
+                          display: 'inline-block',
+                          padding: '14px 18px',
+                          borderRadius: '14px',
+                          backgroundColor: msg.sender === 'user' ? activeTheme.userBubbleBg : activeTheme.assistantBubbleBg,
+                          color: msg.sender === 'user' ? activeTheme.userBubbleText : activeTheme.assistantBubbleText,
+                          fontSize: '15px',
+                          lineHeight: '1.5',
+                          maxWidth: '100%',
+                          minWidth: 0,
+                          textAlign: 'left',
+                          wordBreak: 'break-word',
+                          overflowWrap: 'anywhere',
+                          backdropFilter: (isTaylorLight || isBerryLight || isMonsoonDark) ? 'blur(8px)' : 'none',
+                          WebkitBackdropFilter: (isTaylorLight || isBerryLight || isMonsoonDark) ? 'blur(8px)' : 'none',
+                        }}
+                      >
+                        {msg.sender === 'assistant' ? (
+                          <ReactMarkdown
+                            remarkPlugins={[remarkGfm]}
+                            components={{
+                              table: ({ children }) => (
+                                <div style={{
+                                  overflowX: 'auto',
+                                  maxWidth: '100%',
+                                  margin: '16px 0',
+                                  borderRadius: '6px',
+                                  border: '1px solid rgba(255,255,255,0.15)',
+                                }}>
+                                  <table style={{
+                                    borderCollapse: 'collapse',
+                                    minWidth: '100%',
+                                    fontSize: '13.5px',
+                                    background: 'rgba(0,0,0,0.2)',
+                                  }}>
+                                    {children}
+                                  </table>
+                                </div>
+                              ),
                             }}
                           >
-                            {speakingMessageId === msg.id ? '⏹ Stop' : '🔊 Read Aloud'}
-                          </button>
+                            {msg.text}
+                          </ReactMarkdown>
+                        ) : (
+                          msg.text
+                        )}
 
-                          <span style={{ fontSize: '11px', opacity: 0.65, fontStyle: 'italic' }}>
-                            {msg.timestamp || getCurrentTimeString()}
-                          </span>
-                        </div>
+                        {msg.documentId !== undefined && msg.fileName && (
+                          <div style={{ marginTop: '8px' }}>
+                            <button
+                              onClick={() => openPreviewForDoc(msg.documentId as number)}
+                              style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '6px',
+                                padding: '6px 10px',
+                                borderRadius: '8px',
+                                border: `1px solid ${activeTheme.chatBoxBorder}`,
+                                backgroundColor: activeTheme.newChatBtn,
+                                color: activeTheme.newChatBtnText,
+                                fontWeight: 'bold',
+                                fontSize: '12px',
+                                cursor: 'pointer',
+                              }}
+                              title={`Open preview of ${msg.fileName}`}
+                            >
+                              📄 Preview: {msg.fileName.length > 28 ? msg.fileName.slice(0, 28) + '…' : msg.fileName}
+                            </button>
+                          </div>
+                        )}
 
-                        {speakingMessageId === msg.id && (
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '6px' }}>
-                            <span style={{ fontSize: '10px', opacity: 0.8, fontFamily: 'monospace' }}>
-                              {formatSeconds(audioProgress)}
-                            </span>
-                            <input
-                              type="range"
-                              min="0"
-                              max={audioDuration || 10}
-                              value={audioProgress}
-                              onChange={(e) => setAudioProgress(Number(e.target.value))}
-                              style={{ flex: 1, height: '4px', cursor: 'pointer', accentColor: activeTheme.newChatBtn }}
-                            />
-                            <span style={{ fontSize: '10px', opacity: 0.8, fontFamily: 'monospace' }}>
-                              {formatSeconds(audioDuration)}
-                            </span>
+                        {msg.sender === 'assistant' && (
+                          <div style={{ marginTop: '10px', paddingTop: '8px', borderTop: `1px solid ${activeTheme.sidebarBorder}` }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', marginBottom: speakingMessageId === msg.id ? '8px' : '0' }}>
+                              <button
+                                onClick={() => toggleSpeakResponse(msg.id, msg.text, msg.audioUrl)}
+                                style={{
+                                  backgroundColor: speakingMessageId === msg.id ? activeTheme.newChatBtn : 'transparent',
+                                  border: 'none',
+                                  color: speakingMessageId === msg.id ? activeTheme.newChatBtnText : activeTheme.newChatBtn,
+                                  borderRadius: '4px',
+                                  cursor: 'pointer',
+                                  fontSize: '12px',
+                                  fontWeight: 'bold',
+                                  padding: speakingMessageId === msg.id ? '4px 10px' : '0',
+                                }}
+                              >
+                                {speakingMessageId === msg.id ? '⏹ Stop' : '🔊 Read Aloud'}
+                              </button>
+
+                              <span style={{ fontSize: '11px', opacity: 0.65, fontStyle: 'italic' }}>
+                                {msg.timestamp || getCurrentTimeString()}
+                              </span>
+                            </div>
+
+                            {speakingMessageId === msg.id && !msg.audioUrl && (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '6px' }}>
+                                <span style={{ fontSize: '10px', opacity: 0.8, fontFamily: 'monospace' }}>
+                                  {formatSeconds(audioProgress)}
+                                </span>
+                                <input
+                                  type="range"
+                                  min="0"
+                                  max={audioDuration || 10}
+                                  value={audioProgress}
+                                  onChange={(e) => setAudioProgress(Number(e.target.value))}
+                                  style={{ flex: 1, height: '4px', cursor: 'pointer', accentColor: activeTheme.newChatBtn }}
+                                />
+                                <span style={{ fontSize: '10px', opacity: 0.8, fontFamily: 'monospace' }}>
+                                  {formatSeconds(audioDuration)}
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {msg.sender === 'user' && msg.timestamp && (
+                          <div style={{ textAlign: 'right', marginTop: '4px', fontSize: '10px', opacity: 0.75 }}>
+                            {msg.timestamp}
                           </div>
                         )}
                       </div>
-                    )}
+                    </div>
+                  ))
+                )}
+                {isLoading && (
+                  <p style={{ fontStyle: 'italic', color: activeTheme.sidebarTitle }}>
+                    Thinking & checking knowledge base... 🧠
+                  </p>
+                )}
+                <div ref={chatEndRef} />
+              </div>
+            </div>
 
-                    {msg.sender === 'user' && msg.timestamp && (
-                      <div style={{ textAlign: 'right', marginTop: '4px', fontSize: '10px', opacity: 0.75 }}>
-                        {msg.timestamp}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              ))
-            )}
-            {isLoading && <p style={{ fontStyle: 'italic', color: activeTheme.sidebarTitle }}>Thinking & checking knowledge base... 🧠</p>}
-            <div ref={chatEndRef} />
+            {/* RIGHT-SIDE BUTTON RAIL */}
+            <div
+              style={{
+                position: 'absolute',
+                top: '10px',
+                left: '100%',
+                marginLeft: '14px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '10px',
+                minWidth: '180px',
+              }}
+            >
+              <button
+                onClick={handleCreateAndUploadBlob}
+                disabled={isUploading}
+                style={{
+                  padding: '10px 14px',
+                  borderRadius: '10px',
+                  border: `1px solid ${activeTheme.chatBoxBorder}`,
+                  backgroundColor: activeTheme.activeSessionBg,
+                  color: activeTheme.activeSessionText,
+                  fontWeight: 'bold',
+                  cursor: isUploading ? 'not-allowed' : 'pointer',
+                  fontSize: '12.5px',
+                  whiteSpace: 'nowrap',
+                  boxShadow: '0 3px 10px rgba(0,0,0,0.15)',
+                }}
+              >
+                {isUploading ? '⏳ Processing...' : '📝 Create Blob & Upload'}
+              </button>
+
+              <button
+                onClick={() => fetchDocumentChunks()}
+                style={{
+                  padding: '10px 14px',
+                  borderRadius: '10px',
+                  border: `1px solid ${activeTheme.chatBoxBorder}`,
+                  backgroundColor: activeTheme.activeSessionBg,
+                  color: activeTheme.activeSessionText,
+                  fontWeight: 'bold',
+                  cursor: 'pointer',
+                  fontSize: '12.5px',
+                  whiteSpace: 'nowrap',
+                  boxShadow: '0 3px 10px rgba(0,0,0,0.15)',
+                }}
+              >
+                🧩 View Chunks
+              </button>
+            </div>
           </div>
 
           {/* Input Controls */}
@@ -2133,44 +3022,11 @@ export const ChatUI: React.FC = () => {
               {isUploading ? '⏳ Uploading...' : '📄 Upload Doc'}
             </button>
 
-            {previewData && (
-              <button
-                onClick={() => setShowPreviewModal(true)}
-                style={{
-                  padding: '12px 14px',
-                  borderRadius: '8px',
-                  border: `1px solid ${activeTheme.chatBoxBorder}`,
-                  backgroundColor: activeTheme.newChatBtn,
-                  color: activeTheme.newChatBtnText,
-                  fontWeight: 'bold',
-                  cursor: 'pointer',
-                  fontSize: '13px',
-                }}
-              >
-                👁️ Preview Doc
-              </button>
-            )}
-
-            <button
-              onClick={fetchDocumentChunks}
-              style={{
-                padding: '12px 14px',
-                borderRadius: '8px',
-                border: `1px solid ${activeTheme.chatBoxBorder}`,
-                backgroundColor: activeTheme.activeSessionBg,
-                color: activeTheme.activeSessionText,
-                fontWeight: 'bold',
-                cursor: 'pointer',
-                fontSize: '13px',
-              }}
-            >
-              🧩 View Chunks
-            </button>
-
             <button
               onClick={startVoiceInput}
+              title="Dictate into the text box"
               style={{
-                padding: '12px 16px',
+                padding: '12px 14px',
                 borderRadius: '8px',
                 border: 'none',
                 backgroundColor: isListening ? activeTheme.newChatBtn : activeTheme.voiceBtnBg,
@@ -2180,7 +3036,7 @@ export const ChatUI: React.FC = () => {
                 fontSize: '13px',
               }}
             >
-              {isListening ? '🎙 Stop' : '🎤 Speak'}
+              {isListening ? '🎙 Stop' : '🎤 Dictate'}
             </button>
 
             <input
@@ -2221,124 +3077,119 @@ export const ChatUI: React.FC = () => {
         </div>
       </div>
 
-      {/* 📄 FULL MARKDOWN FORMATTED DOCUMENT MODAL */}
+      {/* 📄 VISUAL COMPARATOR MODAL */}
       {showPreviewModal && previewData && (
-        <div style={{ position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', backgroundColor: 'rgba(0, 0, 0, 0.85)', backdropFilter: 'blur(6px)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 9999 }}>
-          <div style={{ width: '95%', maxWidth: '1400px', height: '90vh', backgroundColor: activeTheme.chatBoxBg, border: `2px solid ${activeTheme.chatBoxBorder}`, borderRadius: '16px', padding: '20px', display: 'flex', flexDirection: 'column', boxShadow: '0 10px 30px rgba(0,0,0,0.5)' }}>
-            
-            {/* MODAL HEADER */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', borderBottom: `1px solid ${activeTheme.sidebarBorder}`, paddingBottom: '10px' }}>
-              <h3 style={{ margin: 0, color: activeTheme.mainTitle, fontSize: '18px', fontWeight: 'bold' }}>
-                📄 Visual Comparator: <span style={{ opacity: 0.8 }}>{previewData.fileName}</span>
-              </h3>
-              <button onClick={() => setShowPreviewModal(false)} style={{ backgroundColor: 'transparent', border: 'none', color: activeTheme.mainTitle, fontSize: '22px', fontWeight: 'bold', cursor: 'pointer' }}>✖</button>
-            </div>
-
-            <div style={{ flex: 1, display: 'flex', gap: '18px', overflow: 'hidden' }}>
-              
-              {/* LEFT SIDE: GENERATED MARKDOWN DOCUMENT */}
-              <div className="markdown-wrapper" style={{ flex: 1, backgroundColor: activeTheme.bgSidebar, borderRadius: '10px', padding: '18px', overflowY: 'auto', border: `1px solid ${activeTheme.sidebarBorder}` }}>
-                <h4 style={{ margin: '0 0 12px 0', color: activeTheme.sidebarTitle, fontSize: '13px', textTransform: 'uppercase' }}>
-                  📄 GENERATED MARKDOWN DOCUMENT
-                </h4>
-                <div style={{ color: activeTheme.sidebarText, fontSize: '14px', lineHeight: '1.65' }}>
-                  {previewData.extractedBlocks.map((block) => {
-                    const isHovered = hoveredBlockId === block.id;
-                    return (
-                      <div
-                        key={`left-${block.id}`}
-                        ref={(element) => { leftTextRefs.current[block.id] = element; }}
-                        style={{
-                          padding: '0 8px',
-                          margin: '0',
-                          borderLeft: isHovered ? `4px solid ${activeTheme.chatBoxBorder}` : '4px solid transparent',
-                          backgroundColor: isHovered ? `${activeTheme.newChatBtn}22` : 'transparent',
-                          color: activeTheme.sidebarText,
-                          transition: 'background-color 0.2s ease, border-color 0.2s ease',
-                        }}
-                      >
-                        {isMarkdownTableBlock(block.text) ? (
-                          <div style={{ overflowX: 'auto' }}>
-                            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                              <thead><tr>{getMarkdownTableRows(block.text)[0]?.map((cell, index) => <th key={index} style={{ border: `1px solid ${activeTheme.sidebarBorder}`, padding: '8px', textAlign: 'left', backgroundColor: activeTheme.chatBoxBg }}>{cell}</th>)}</tr></thead>
-                              <tbody>{getMarkdownTableRows(block.text).slice(1).map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, cellIndex) => <td key={cellIndex} style={{ border: `1px solid ${activeTheme.sidebarBorder}`, padding: '8px', verticalAlign: 'top' }}>{cell}</td>)}</tr>)}</tbody>
-                            </table>
-                          </div>
-                        ) : (
-                          <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>
-                            {block.text}
-                          </ReactMarkdown>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
+        previewData.fileName.toLowerCase().endsWith('.pdf') &&
+        Array.isArray(previewData.blocks) &&
+        previewData.blocks.length > 0 ? (
+          <PdfComparator
+            fileUrl={previewData.fileUrl}
+            fileName={previewData.fileName}
+            blocks={previewData.blocks}
+            pageDimensions={previewData.pageDimensions}
+            colors={{
+              chatBoxBg: activeTheme.chatBoxBg,
+              chatBoxBorder: activeTheme.chatBoxBorder,
+              sidebarBorder: activeTheme.sidebarBorder,
+              sidebarTitle: activeTheme.sidebarTitle,
+              sidebarText: activeTheme.sidebarText,
+              mainTitle: activeTheme.mainTitle,
+              assistantBubbleBg: activeTheme.assistantBubbleBg,
+              newChatBtn: activeTheme.newChatBtn,
+              newChatBtnText: activeTheme.newChatBtnText,
+            }}
+            onClose={() => setShowPreviewModal(false)}
+          />
+        ) : (
+          <div style={{
+            position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh',
+            backgroundColor: 'rgba(0, 0, 0, 0.85)', backdropFilter: 'blur(6px)',
+            display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 9999,
+          }}>
+            <div style={{
+              width: '95%', maxWidth: '1400px', height: '90vh',
+              backgroundColor: activeTheme.chatBoxBg,
+              border: `2px solid ${activeTheme.chatBoxBorder}`,
+              borderRadius: '16px', padding: '20px',
+              display: 'flex', flexDirection: 'column',
+              boxShadow: '0 10px 30px rgba(0,0,0,0.5)',
+            }}>
+              <div style={{
+                display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                marginBottom: '14px', borderBottom: `1px solid ${activeTheme.sidebarBorder}`,
+                paddingBottom: '10px',
+              }}>
+                <h3 style={{ margin: 0, color: activeTheme.mainTitle, fontSize: '18px', fontWeight: 'bold' }}>
+                  📄 Preview: <span style={{ opacity: 0.8 }}>{previewData.fileName}</span>
+                </h3>
+                <button
+                  onClick={() => setShowPreviewModal(false)}
+                  style={{
+                    backgroundColor: 'transparent', border: 'none',
+                    color: activeTheme.mainTitle, fontSize: '22px',
+                    fontWeight: 'bold', cursor: 'pointer',
+                  }}
+                >✖</button>
               </div>
-
-              {/* RIGHT SIDE: PARSED TEXT, HEADINGS, AND TABLES */}
-              <div className="markdown-wrapper" style={{ flex: 1, backgroundColor: activeTheme.assistantBubbleBg, borderRadius: '10px', padding: '18px', overflowY: 'auto', border: `1px solid ${activeTheme.sidebarBorder}` }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                  <h4 style={{ margin: 0, color: activeTheme.sidebarTitle, fontSize: '13px', textTransform: 'uppercase' }}>
-                    📖 PARSED TEXT, HEADINGS & TABLES
-                  </h4>
-                  <span style={{ fontSize: '11px', opacity: 0.7, color: activeTheme.sidebarText }}>Hover to Highlight Block 🎯</span>
-                </div>
-
-                {previewData.extractedBlocks.filter((block) => !isMarkdownTableBlock(block.text)).map((block) => {
-                  const isHovered = hoveredBlockId === block.id;
-                  return (
-                    <div
-                      key={`right-${block.id}`}
-                      ref={(el) => { rightTextRefs.current[block.id] = el; }}
-                      onMouseEnter={() => handleRightTextHover(block.id)}
-                      onMouseLeave={() => handleRightTextHover(null)}
-                      style={{
-                        padding: '12px 16px',
-                        borderRadius: '8px',
-                        marginBottom: '10px',
-                        backgroundColor: isHovered ? activeTheme.newChatBtn : activeTheme.chatBoxBg,
-                        color: isHovered ? activeTheme.newChatBtnText : activeTheme.assistantBubbleText,
-                        border: `1px solid ${isHovered ? '#ef4444' : activeTheme.sidebarBorder}`,
-                        cursor: 'pointer',
-                        fontSize: '14px',
-                        lineHeight: '1.6',
-                        transition: 'all 0.2s ease',
-                        boxShadow: isHovered ? '0 0 12px rgba(239, 68, 68, 0.4)' : 'none',
-                      }}
-                    >
-                      <ReactMarkdown
-                        remarkPlugins={[remarkGfm, remarkBreaks]}
-                        components={{
-                          h1: ({ children }) => <h1 style={{ fontSize: '22px', margin: '18px 0 10px', color: activeTheme.mainTitle }}>{children}</h1>,
-                          h2: ({ children }) => <h2 style={{ fontSize: '18px', margin: '16px 0 8px', color: activeTheme.mainTitle }}>{children}</h2>,
-                          h3: ({ children }) => <h3 style={{ fontSize: '15px', margin: '14px 0 8px', color: activeTheme.sidebarTitle }}>{children}</h3>,
-                                                    p: ({ children }) => <p style={{ margin: '0 0 12px', lineHeight: '1.6' }}>{children}</p>,
-                                                    strong: ({ children }) => <strong style={{ fontWeight: 800 }}>{children}</strong>,
-                          table: ({ children }) => <div style={{ overflowX: 'auto', margin: '14px 0' }}><table style={{ width: '100%', borderCollapse: 'collapse' }}>{children}</table></div>,
-                          th: ({ children }) => <th style={{ border: `1px solid ${activeTheme.sidebarBorder}`, padding: '8px', textAlign: 'left', backgroundColor: activeTheme.chatBoxBg }}>{children}</th>,
-                          td: ({ children }) => <td style={{ border: `1px solid ${activeTheme.sidebarBorder}`, padding: '8px', verticalAlign: 'top' }}>{children}</td>,
-                        }}
-                      >
-                        {block.text}
-                      </ReactMarkdown>
-                    </div>
-                  );
-                })}
+              <div style={{
+                flex: 1, overflow: 'auto',
+                backgroundColor: activeTheme.assistantBubbleBg,
+                borderRadius: '10px', padding: '18px',
+                border: `1px solid ${activeTheme.sidebarBorder}`,
+                color: activeTheme.assistantBubbleText,
+              }}>
+                <pre style={{ whiteSpace: 'pre-wrap', fontSize: '13px', margin: 0, fontFamily: 'inherit' }}>
+                  {previewData.fullExtractedText || '(no markdown available)'}
+                </pre>
               </div>
-
             </div>
           </div>
-        </div>
+        )
       )}
 
       {/* CHUNK INSPECTOR MODAL */}
       {showChunkModal && (
         <div style={{ position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', backgroundColor: 'rgba(0, 0, 0, 0.65)', backdropFilter: 'blur(4px)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 999 }}>
-          <div style={{ width: '90%', maxWidth: '750px', maxHeight: '80vh', backgroundColor: activeTheme.chatBoxBg, border: `2px solid ${activeTheme.chatBoxBorder}`, borderRadius: '16px', padding: '24px', display: 'flex', flexDirection: 'column' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+          <div style={{ width: '90%', maxWidth: '850px', maxHeight: '85vh', backgroundColor: activeTheme.chatBoxBg, border: `2px solid ${activeTheme.chatBoxBorder}`, borderRadius: '16px', padding: '24px', display: 'flex', flexDirection: 'column' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', gap: '12px', flexWrap: 'wrap' }}>
               <h3 style={{ margin: 0, color: activeTheme.mainTitle }}>🧩 Document Chunks Inspector</h3>
               <button onClick={() => setShowChunkModal(false)} style={{ backgroundColor: 'transparent', border: 'none', color: activeTheme.mainTitle, fontSize: '20px', fontWeight: 'bold', cursor: 'pointer' }}>✖</button>
             </div>
+
+            {documents.length > 0 && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px', paddingBottom: '12px', borderBottom: `1px solid ${activeTheme.sidebarBorder}` }}>
+                <label style={{ fontSize: '12px', fontWeight: 'bold', color: activeTheme.sidebarTitle, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                  Document:
+                </label>
+                <select
+                  value={chunkDocId ?? ''}
+                  onChange={handleChunkDocChange}
+                  style={{
+                    flex: 1,
+                    padding: '8px 10px',
+                    borderRadius: '8px',
+                    border: `1px solid ${activeTheme.chatBoxBorder}`,
+                    backgroundColor: activeTheme.activeSessionBg,
+                    color: activeTheme.activeSessionText,
+                    fontWeight: 'bold',
+                    fontSize: '13px',
+                    cursor: 'pointer',
+                    outline: 'none',
+                  }}
+                >
+                  {documents.map((doc, idx) => (
+                    <option key={`${doc.id}-${idx}`} value={doc.id}>
+                      {idx === documents.length - 1 ? '🆕 ' : '📄 '}
+                      {doc.fileName} (ID: {doc.id})
+                    </option>
+                  ))}
+                </select>
+                <span style={{ fontSize: '11px', color: activeTheme.sidebarTitle, whiteSpace: 'nowrap' }}>
+                  {chunks.length} chunk{chunks.length === 1 ? '' : 's'}
+                </span>
+              </div>
+            )}
+
             <div style={{ flex: 1, overflowY: 'auto' }}>
               {isFetchingChunks ? (
                 <p style={{ color: activeTheme.sidebarTitle, textAlign: 'center' }}>Loading document chunks... ⏳</p>
@@ -2346,7 +3197,7 @@ export const ChatUI: React.FC = () => {
                 <p style={{ color: activeTheme.sidebarTitle, textAlign: 'center' }}>No document chunks found! 📄</p>
               ) : (
                 chunks.map((chunk) => (
-                  <div key={chunk.id} style={{ border: `1px solid ${activeTheme.sidebarBorder}`, backgroundColor: activeTheme.assistantBubbleBg, borderRadius: '10px', padding: '14px', marginBottom: '12px' }}>
+                  <div key={`${chunk.documentId}-${chunk.id}-${chunk.chunkIndex}`} style={{ border: `1px solid ${activeTheme.sidebarBorder}`, backgroundColor: activeTheme.assistantBubbleBg, borderRadius: '10px', padding: '14px', marginBottom: '12px' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', fontWeight: 'bold', color: activeTheme.sidebarTitle, marginBottom: '8px' }}>
                       <span>Chunk #{chunk.chunkIndex + 1}</span>
                       <span>Doc ID: {chunk.documentId}</span>
