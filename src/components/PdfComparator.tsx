@@ -43,16 +43,86 @@ interface Props {
 
 const STANDARD_FONTS_URL = 'https://unpkg.com/pdfjs-dist@6.3.289/standard_fonts/';
 const MIN_ZOOM = 0.5;
-const MAX_ZOOM = 3;
-const ZOOM_STEP = 0.2;
-const FIT_PADDING = 32; // px of breathing room around the page
+const MAX_ZOOM = 5;          // ↑ raised from 3 so users can zoom into fine print
+const ZOOM_STEP = 0.25;
+const FIT_PADDING = 32;
+
+const MIN_VISIBLE_W = 4;
+const MIN_VISIBLE_H = 4;
+
+const MAX_BBOX_AREA_FRACTION = 0.5;
+const MAX_BBOX_HEIGHT_FRACTION = 0.5;
+
+/**
+ * Base render scale on top of DPR. 2.5–3 gives crisp text even when the
+ * user zooms up to ~3×. Combined with DPR, this typically produces a
+ * canvas that's 2.5×–6× the on-screen size, so browser downscaling is
+ * always sharp.
+ */
+const BASE_RENDER_SCALE = 2.5;
+
+const normalizeBbox = (r: Bbox): Bbox => {
+  let { x, y, width, height } = r;
+  if (width < 0) { x = x + width; width = Math.abs(width); }
+  if (height < 0) { y = y + height; height = Math.abs(height); }
+  return { x, y, width, height };
+};
+
+const isBboxSane = (r: Bbox, pageW: number, pageH: number): boolean => {
+  const n = normalizeBbox(r);
+  if (n.width <= 0 || n.height <= 0) return false;
+  const areaFraction = (n.width * n.height) / (pageW * pageH);
+  if (areaFraction > MAX_BBOX_AREA_FRACTION) return false;
+  if (n.height / pageH > MAX_BBOX_HEIGHT_FRACTION) return false;
+  return true;
+};
 
 const clampRect = (r: Bbox, pageW: number, pageH: number): Bbox => {
-  const x = Math.max(0, Math.min(r.x, pageW));
-  const y = Math.max(0, Math.min(r.y, pageH));
-  const w = Math.max(0, Math.min(r.width, pageW - x));
-  const h = Math.max(0, Math.min(r.height, pageH - y));
+  const n = normalizeBbox(r);
+  let x = n.x, y = n.y, w = n.width, h = n.height;
+  if (x + w <= 0) x = 0;
+  if (y + h <= 0) y = 0;
+  if (x >= pageW) x = Math.max(0, pageW - MIN_VISIBLE_W);
+  if (y >= pageH) y = Math.max(0, pageH - MIN_VISIBLE_H);
+  x = Math.max(0, Math.min(x, pageW));
+  y = Math.max(0, Math.min(y, pageH));
+  const maxW = pageW - x;
+  const maxH = pageH - y;
+  w = Math.max(MIN_VISIBLE_W, Math.min(w, maxW));
+  h = Math.max(MIN_VISIBLE_H, Math.min(h, maxH));
   return { x, y, width: w, height: h };
+};
+
+const boxesForBlock = (block: ParsedBlock, pageW: number, pageH: number): Bbox[] => {
+  const candidates: Bbox[] =
+    block.lineBoxes && block.lineBoxes.length > 0 ? block.lineBoxes : [block.bbox];
+
+  const drawn: Bbox[] = [];
+  for (const raw of candidates) {
+    if (!isBboxSane(raw, pageW, pageH)) {
+      console.warn(`[PdfComparator] Rejecting insane bbox for block ${block.id}:`, raw);
+      continue;
+    }
+    const rect = clampRect(raw, pageW, pageH);
+    if (rect.width >= MIN_VISIBLE_W && rect.height >= MIN_VISIBLE_H) drawn.push(rect);
+  }
+
+  if (drawn.length === 0 && isBboxSane(block.bbox, pageW, pageH)) {
+    drawn.push(clampRect(block.bbox, pageW, pageH));
+  }
+
+  if (drawn.length === 0) {
+    const lineHeight = Math.min(24, pageH * 0.03);
+    const boxW = Math.min(pageW * 0.3, 200);
+    const rawY = block.bbox?.y ?? pageH * 0.5;
+    const safeY = Math.max(0, Math.min(rawY, pageH - lineHeight));
+    const rawX = block.bbox?.x ?? pageW * 0.5;
+    const safeX = Math.max(0, Math.min(rawX, pageW - boxW));
+    drawn.push({ x: safeX, y: safeY, width: boxW, height: lineHeight });
+    console.warn(`[PdfComparator] Synthesized fallback bbox for block ${block.id}`);
+  }
+
+  return drawn;
 };
 
 export const PdfComparator: React.FC<Props> = ({
@@ -84,7 +154,6 @@ export const PdfComparator: React.FC<Props> = ({
     });
   }, []);
 
-  // Measure container width for auto-fit
   useEffect(() => {
     const el = pdfContainerRef.current;
     if (!el) return;
@@ -95,7 +164,6 @@ export const PdfComparator: React.FC<Props> = ({
     return () => ro.disconnect();
   }, []);
 
-  // Load PDF + capture pdfjs viewport dims
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -122,8 +190,6 @@ export const PdfComparator: React.FC<Props> = ({
           dims[n] = { width: vp.width, height: vp.height };
         }
         setPdfDimsByPage(dims);
-        console.log('[PdfComparator] pdfjs dims:', dims);
-        console.log('[PdfComparator] llama dims:', pageDimensions);
       } catch (err: any) {
         console.error('[PdfComparator] load error', err);
         setPdfError(err?.message || 'Failed to load PDF');
@@ -132,31 +198,70 @@ export const PdfComparator: React.FC<Props> = ({
     return () => { cancelled = true; };
   }, [fileUrl]);
 
-  // Render canvases
+  /**
+   * RENDER CANVASES
+   *
+   * This effect must depend on `zoom` (and containerWidth / pageDimensions
+   * via fitPageWidth) so that when the user zooms, we re-render at a
+   * higher internal resolution. Previously the dependency array was
+   * [pdfDoc, numPages] only, so zooming just stretched a low-res bitmap.
+   */
   useEffect(() => {
     if (!pdfDoc) return;
+    if (zoomedPageWidth === 0) return;
+    if (!fitPageWidth) return;
+
     let cancelled = false;
+
     (async () => {
       const dpr = window.devicePixelRatio || 1;
+
       for (let n = 1; n <= pdfDoc.numPages; n++) {
         if (cancelled) return;
         const canvas = document.getElementById(`pdf-canvas-${n}`) as HTMLCanvasElement | null;
         if (!canvas) continue;
+
         try {
           const page = await pdfDoc.getPage(n);
-          const vp = page.getViewport({ scale: dpr });
-          canvas.width = vp.width;
-          canvas.height = vp.height;
-          const ctx = canvas.getContext('2d');
+          const baseVp = page.getViewport({ scale: 1 });
+
+          // The CSS size (what the user sees on screen) for this page:
+          const cssWidth = zoomedPageWidth;
+          const cssHeight = (cssWidth * baseVp.height) / baseVp.width;
+
+          // The internal render scale: enough to fill the CSS size times
+          // BASE_RENDER_SCALE times DPR. This guarantees crisp rendering
+          // at any zoom level up to ~BASE_RENDER_SCALE× on a HiDPI display.
+          const renderScale = (cssWidth * dpr * BASE_RENDER_SCALE) / baseVp.width;
+
+          const vp = page.getViewport({ scale: renderScale });
+          canvas.width = Math.floor(vp.width);
+          canvas.height = Math.floor(vp.height);
+
+          // Force the canvas CSS size to match the on-screen size, so the
+          // browser downsamples rather than upsamples.
+          canvas.style.width = `${cssWidth}px`;
+          canvas.style.height = `${cssHeight}px`;
+
+          const ctx = canvas.getContext('2d', { alpha: false });
           if (!ctx) continue;
+          ctx.imageSmoothingEnabled = true;
+          ctx.imageSmoothingQuality = 'high';
+
+          // Reset transform in case pdfjs leaves one behind
+          ctx.setTransform(1, 0, 0, 1, 0, 0);
+
           await page.render({ canvasContext: ctx, viewport: vp }).promise;
-        } catch (e) { console.warn(`render page ${n} failed`, e); }
+        } catch (e) {
+          console.warn(`render page ${n} failed`, e);
+        }
       }
     })();
-    return () => { cancelled = true; };
-  }, [pdfDoc, numPages]);
 
-  // Ctrl+wheel zoom
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pdfDoc, numPages, zoom, zoomedPageWidth, fitPageWidth]);
+
   useEffect(() => {
     const el = pdfContainerRef.current;
     if (!el) return;
@@ -180,7 +285,6 @@ export const PdfComparator: React.FC<Props> = ({
 
   const activeBlock = hoveredBlockId ? blocksById.get(hoveredBlockId) ?? null : null;
 
-  // Fit-to-width page pixel width — this becomes the "100%" reference
   const fitPageWidth = useMemo(() => {
     if (containerWidth <= 0) return 0;
     return Math.max(200, containerWidth - FIT_PADDING);
@@ -188,7 +292,6 @@ export const PdfComparator: React.FC<Props> = ({
 
   const zoomedPageWidth = fitPageWidth > 0 ? fitPageWidth * zoom : 0;
 
-  // Auto-scroll to top of the hovered block's bbox
   useEffect(() => {
     if (!activeBlock || zoomedPageWidth === 0) return;
     const container = pdfContainerRef.current;
@@ -215,7 +318,6 @@ export const PdfComparator: React.FC<Props> = ({
     [numPages]
   );
 
-  // Rects to draw on page n, using LlamaParse page units
   const rectsForPage = (n: number): { rects: Bbox[]; isDebug: boolean; blockId: string | null } => {
     const llamaDims = pageDimensions[n];
     if (!llamaDims) return { rects: [], isDebug: false, blockId: null };
@@ -224,27 +326,16 @@ export const PdfComparator: React.FC<Props> = ({
       const out: Bbox[] = [];
       for (const b of blocks) {
         if (b.page !== n) continue;
-        const raw = b.lineBoxes && b.lineBoxes.length > 0 ? b.lineBoxes : [b.bbox];
-        for (const r of raw) {
-          if (r.width <= 0 || r.height <= 0) continue;
-          out.push(clampRect(r, llamaDims.width, llamaDims.height));
-        }
+        const boxes = boxesForBlock(b, llamaDims.width, llamaDims.height);
+        for (const r of boxes) out.push(r);
       }
       return { rects: out, isDebug: true, blockId: null };
     }
 
     if (!activeBlock || activeBlock.page !== n) return { rects: [], isDebug: false, blockId: null };
 
-    const raw = activeBlock.lineBoxes && activeBlock.lineBoxes.length > 0
-      ? activeBlock.lineBoxes
-      : [activeBlock.bbox];
-
-    const out: Bbox[] = [];
-    for (const r of raw) {
-      if (r.width <= 0 || r.height <= 0) continue;
-      out.push(clampRect(r, llamaDims.width, llamaDims.height));
-    }
-    return { rects: out, isDebug: false, blockId: activeBlock.id };
+    const boxes = boxesForBlock(activeBlock, llamaDims.width, llamaDims.height);
+    return { rects: boxes, isDebug: false, blockId: activeBlock.id };
   };
 
   return (
@@ -372,9 +463,18 @@ export const PdfComparator: React.FC<Props> = ({
                         overflow: 'hidden',
                       }}
                     >
+                      {/* Canvas is now rendered at high resolution internally
+                          and displayed at the CSS size we control here. */}
                       <canvas
                         id={`pdf-canvas-${n}`}
-                        style={{ width: '100%', height: '100%', display: 'block', background: '#fff' }}
+                        style={{
+                          display: 'block',
+                          width: '100%',
+                          height: '100%',
+                          background: '#fff',
+                          // Hint the browser to keep it sharp on downscale
+                          imageRendering: 'auto',
+                        }}
                       />
                       <div data-page-marker={n} style={{ position: 'absolute', top: 0, left: 0, width: 1, height: 1 }} />
 
