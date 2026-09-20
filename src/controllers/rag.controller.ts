@@ -1,3 +1,4 @@
+// src/controllers/rag.controller.ts
 import { Request, Response } from 'express';
 import { similarityService } from '../services/similarity.service.js';
 import axios from 'axios';
@@ -9,130 +10,128 @@ dotenv.config({ path: path.resolve(process.cwd(), '.env') });
 export class RagController {
   async askQuestion(req: Request, res: Response): Promise<void> {
     try {
-      const { question, documentId } = req.body;
+      // 1. NEW: Accept chat history from the frontend
+      const { question, documentId, history = [] } = req.body;
 
       if (!question || typeof question !== 'string') {
         res.status(400).json({ error: 'Please provide a valid question.' });
         return;
       }
 
-      // 1. Silent Context Retrieval (Optional RAG Enhancement)
+      // 2. Silent Context Retrieval (Search only the active document)
       let contextText = '';
       let citations: any[] = [];
 
       try {
         const parsedDocId = Number(documentId);
+        // Only search if a documentId is actually provided
         const targetDocId = documentId && !isNaN(parsedDocId) && parsedDocId > 0 ? parsedDocId : undefined;
 
-        const relevantChunks = await similarityService.findSimilarChunks(question, 3, targetDocId);
-        if (relevantChunks && relevantChunks.length > 0) {
-          const uniqueChunks = Array.from(
-            new Map(relevantChunks.map((item) => [item.content.trim(), item])).values()
-          );
-
-          contextText = uniqueChunks
-            .map((c) => `[Doc #${c.documentId}]: ${c.content}`)
-            .join('\n\n');
-
-          citations = uniqueChunks.map((c, idx) => ({
-            sourceNumber: idx + 1,
-            documentId: c.documentId,
-            chunkIndex: c.chunkIndex,
-            similarityScore: c.similarityScore,
-          }));
+        if (targetDocId) {
+          const relevantChunks = await similarityService.findSimilarChunks(question, 3, targetDocId);
+          if (relevantChunks && relevantChunks.length > 0) {
+            const uniqueChunks = Array.from(
+              new Map(relevantChunks.map((item) => [item.content.trim(), item])).values()
+            );
+            contextText = uniqueChunks.map((c) => `[Doc #${c.documentId}]: ${c.content}`).join('\n\n');
+            citations = uniqueChunks.map((c, idx) => ({
+              sourceNumber: idx + 1,
+              documentId: c.documentId,
+              chunkIndex: c.chunkIndex,
+              similarityScore: c.similarityScore,
+            }));
+          }
         }
       } catch (err) {
-        // Continue if vector search yields no results
+        console.warn('[RAG] Vector search failed, proceeding without context.');
       }
 
-      // 2. Pure ChatGPT / Gemini Style System Prompt
-      const systemPrompt = `You are a smart, articulate, witty, and versatile AI assistant.
-Answer ANY and ALL questions directly, accurately, naturally, and comprehensively.
+      // 3. Build the System Prompt
+      let systemPrompt = `You are a smart, articulate, and helpful AI assistant.
+Answer ANY and ALL questions directly, naturally, and comprehensively.
+If relevant document context is provided below, use it to answer. If not, use your general knowledge.
+NEVER refuse to answer.`;
 
-INSTRUCTIONS:
-- Answer general knowledge, celebrities, geography, science, math, coding, or casual chat using your full intelligence.
-- If relevant document context is provided below AND matches the user's inquiry, use it to enrich your answer.
-- Do NOT refuse to answer or state "the documents do not contain information". Answer the question directly!
+      if (contextText) {
+        systemPrompt += `\n\nDOCUMENT CONTEXT (Use this to answer if relevant):\n${contextText}`;
+      }
 
-${contextText ? `DOCUMENT CONTEXT (Optional):\n${contextText}` : ''}`;
+      // 4. NEW: Construct the message array with History
+      // We map the frontend history format to the LLM format
+      const messages = [
+        { role: 'system', content: systemPrompt },
+        ...history.map((msg: any) => ({
+          role: msg.sender === 'user' ? 'user' : 'assistant',
+          content: msg.text
+        })),
+        { role: 'user', content: question }
+      ];
 
       let aiAnswer = '';
 
-      // Clean Keys from process.env
+      // Clean Keys
       const groqKey = (process.env.GROQ_API_KEY || '').replace(/['"]/g, '').trim();
       const openRouterKey = (process.env.OPENROUTER_API_KEY || '').replace(/['"]/g, '').trim();
 
-      // 3. Live LLM Call 1: Groq API (Llama 3.3 70B Versatile)
+      // 5. Call Groq (Passing the full messages array)
       if (groqKey) {
-        const models = ['llama-3.3-70b-versatile', 'llama3-70b-8192', 'mixtral-8x7b-32768'];
+        const models = ['llama-3.3-70b-versatile', 'llama-3.1-70b-versatile', 'llama3-70b-8192'];
         for (const model of models) {
           try {
+            console.log(`[RAG] Attempting Groq (${model})...`);
             const response = await axios.post(
               'https://api.groq.com/openai/v1/chat/completions',
               {
                 model,
-                messages: [
-                  { role: 'system', content: systemPrompt },
-                  { role: 'user', content: question },
-                ],
+                messages: messages, // <--- Pass full history here
                 temperature: 0.7,
                 max_tokens: 1000,
               },
               {
-                headers: {
-                  Authorization: `Bearer ${groqKey}`,
-                  'Content-Type': 'application/json',
-                },
-                timeout: 12000,
+                headers: { Authorization: `Bearer ${groqKey}`, 'Content-Type': 'application/json' },
+                timeout: 15000,
               }
             );
-
             aiAnswer = response.data?.choices?.[0]?.message?.content || '';
-            if (aiAnswer) {
-              console.log(`[REAL AI SUCCESS] Responded via Groq model (${model})`);
-              break;
-            }
+            if (aiAnswer) { console.log(`[RAG SUCCESS] Groq (${model})`); break; }
           } catch (err: any) {
             console.warn(`[Groq ${model} Failed]:`, err?.response?.data?.error?.message || err?.message);
           }
         }
       }
 
-      // 4. Live LLM Call 2: OpenRouter API (Google Gemini 2.0 Flash)
+      // 6. Fallback to OpenRouter
       if (!aiAnswer && openRouterKey) {
-        try {
-          const response = await axios.post(
-            'https://openrouter.ai/api/v1/chat/completions',
-            {
-              model: 'google/gemini-2.0-flash-lite-preview-02-05:free',
-              messages: [
-                { role: 'system', content: systemPrompt },
-                { role: 'user', content: question },
-              ],
-            },
-            {
-              headers: {
-                Authorization: `Bearer ${openRouterKey}`,
-                'Content-Type': 'application/json',
-                'HTTP-Referer': 'http://localhost:3000',
-                'X-Title': 'RAG Assistant',
+        const openRouterModels = ['meta-llama/llama-3.3-70b-instruct:free', 'mistralai/mistral-7b-instruct:free'];
+        for (const model of openRouterModels) {
+          try {
+            console.log(`[RAG] Attempting OpenRouter (${model})...`);
+            const response = await axios.post(
+              'https://openrouter.ai/api/v1/chat/completions',
+              {
+                model: model,
+                messages: messages, // <--- Pass full history here
               },
-              timeout: 12000,
-            }
-          );
-
-          aiAnswer = response.data?.choices?.[0]?.message?.content || '';
-          if (aiAnswer) {
-            console.log('[REAL AI SUCCESS] Responded via OpenRouter (Gemini Flash)');
+              {
+                headers: {
+                  Authorization: `Bearer ${openRouterKey}`,
+                  'Content-Type': 'application/json',
+                  'HTTP-Referer': 'http://localhost:3000',
+                  'X-Title': 'RAG Assistant',
+                },
+                timeout: 15000,
+              }
+            );
+            aiAnswer = response.data?.choices?.[0]?.message?.content || '';
+            if (aiAnswer) { console.log(`[RAG SUCCESS] OpenRouter (${model})`); break; }
+          } catch (err: any) {
+            console.warn(`[OpenRouter ${model} Failed]:`, err?.response?.data?.error?.message || err?.message);
           }
-        } catch (err: any) {
-          console.warn('[OpenRouter Failed]:', err?.response?.data?.error?.message || err?.message);
         }
       }
 
-      // 5. Honest Error State (NO FAKE IF/ELSE FALLBACKS!)
       if (!aiAnswer) {
-        aiAnswer = `❌ **Live LLM Connection Failed**: Both Groq and OpenRouter failed to respond. Please check your terminal console logs to see the exact API key or model error!`;
+        aiAnswer = `❌ **LLM Connection Failed**: Check terminal logs for API errors.`;
       }
 
       res.status(200).json({
@@ -142,7 +141,7 @@ ${contextText ? `DOCUMENT CONTEXT (Optional):\n${contextText}` : ''}`;
         citations: citations.length > 0 ? citations : [],
       });
     } catch (error: any) {
-      console.error('RAG Controller Error:', error);
+      console.error('[RAG Controller Error]:', error);
       res.status(500).json({ error: error?.message || 'Failed to process question.' });
     }
   }

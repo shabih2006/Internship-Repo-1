@@ -1418,7 +1418,6 @@ const IconMoon: React.FC<{ size?: number }> = ({ size = 18 }) => (
   </svg>
 );
 
-// Note: IconMic is kept because the "Dictate" button still uses it
 const IconMic: React.FC<{ size?: number }> = ({ size = 18 }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <rect x="9" y="2" width="6" height="12" rx="3" />
@@ -1427,6 +1426,81 @@ const IconMic: React.FC<{ size?: number }> = ({ size = 18 }) => (
     <line x1="8" y1="22" x2="16" y2="22" />
   </svg>
 );
+
+/* ============================================================
+   ⚠️ ERROR BOUNDARY FOR PDF COMPARATOR
+   ============================================================ */
+interface PdfErrorBoundaryProps {
+  children: React.ReactNode;
+  onClose: () => void;
+}
+interface PdfErrorBoundaryState {
+  hasError: boolean;
+  message: string;
+}
+class PdfErrorBoundary extends React.Component<PdfErrorBoundaryProps, PdfErrorBoundaryState> {
+  constructor(props: PdfErrorBoundaryProps) {
+    super(props);
+    this.state = { hasError: false, message: '' };
+  }
+  static getDerivedStateFromError(error: Error): PdfErrorBoundaryState {
+    return { hasError: true, message: error?.message || 'Unknown error' };
+  }
+  componentDidCatch(error: Error, info: React.ErrorInfo) {
+    console.error('[PdfComparator Crash]:', error, info);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 10000,
+            background: 'rgba(0,0,0,0.85)',
+            display: 'flex',
+            justifyContent: 'center',
+            alignItems: 'center',
+            padding: '24px',
+          }}
+        >
+          <div
+            style={{
+              background: '#1a1d24',
+              color: '#f5f0eb',
+              border: '1px solid #f87171',
+              borderRadius: '12px',
+              padding: '24px',
+              maxWidth: '520px',
+              textAlign: 'center',
+            }}
+          >
+            <h3 style={{ marginTop: 0, color: '#f87171' }}>⚠️ PDF preview crashed</h3>
+            <p style={{ fontSize: '13px', opacity: 0.85 }}>
+              {this.state.message || 'The PDF viewer failed to render this file.'}
+            </p>
+            <button
+              onClick={this.props.onClose}
+              style={{
+                marginTop: '12px',
+                padding: '8px 16px',
+                borderRadius: '8px',
+                border: 'none',
+                background: '#f87171',
+                color: '#fff',
+                fontWeight: 'bold',
+                cursor: 'pointer',
+              }}
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 export const ChatUI: React.FC = () => {
   const [selectedPaletteId, setSelectedPaletteId] = useState<string>(() => {
@@ -1495,7 +1569,6 @@ export const ChatUI: React.FC = () => {
   const [audioProgress, setAudioProgress] = useState<number>(0);
   const [audioDuration, setAudioDuration] = useState<number>(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const ttsAudioRef = useRef<HTMLAudioElement | null>(null);
 
   const [documents, setDocuments] = useState<UploadedDoc[]>([]);
 
@@ -1577,10 +1650,6 @@ export const ChatUI: React.FC = () => {
       if (recognitionRef.current) recognitionRef.current.stop();
       if ('speechSynthesis' in window) window.speechSynthesis.cancel();
       if (timerRef.current) clearInterval(timerRef.current);
-      if (ttsAudioRef.current) {
-        ttsAudioRef.current.pause();
-        ttsAudioRef.current = null;
-      }
       documents.forEach((d) => {
         if (d.fileUrl && d.fileUrl.startsWith('blob:')) URL.revokeObjectURL(d.fileUrl);
       });
@@ -1600,10 +1669,6 @@ export const ChatUI: React.FC = () => {
   const startNewChat = () => {
     if ('speechSynthesis' in window) window.speechSynthesis.cancel();
     if (timerRef.current) clearInterval(timerRef.current);
-    if (ttsAudioRef.current) {
-      ttsAudioRef.current.pause();
-      ttsAudioRef.current = null;
-    }
     setSpeakingMessageId(null);
 
     const newId = Date.now().toString();
@@ -1664,10 +1729,6 @@ export const ChatUI: React.FC = () => {
   const loadSession = (session: ChatSession) => {
     if ('speechSynthesis' in window) window.speechSynthesis.cancel();
     if (timerRef.current) clearInterval(timerRef.current);
-    if (ttsAudioRef.current) {
-      ttsAudioRef.current.pause();
-      ttsAudioRef.current = null;
-    }
     setSpeakingMessageId(null);
     setCurrentSessionId(session.id);
     setMessages(session.messages);
@@ -1776,16 +1837,13 @@ export const ChatUI: React.FC = () => {
       };
       setDocuments((prev) => [...prev, newDoc]);
 
-      setPreviewData({
-        id: docId,
-        fileName: name,
-        fileUrl: filePreviewUrl,
-        markdownUrl: data.markdownUrl,
-        blocks: incomingBlocks,
-        pageDimensions: incomingPageDims,
-        fullExtractedText,
-      });
-      setShowPreviewModal(true);
+      // ⚠️ IMPORTANT FIX:
+      // We deliberately DO NOT auto-open the preview modal here.
+      // The old code called setShowPreviewModal(true) which produced the
+      // "black screen" (an rgba(0,0,0,0.85) fullscreen overlay) whenever
+      // the viewer was slow, hung, or the file had no renderable content.
+      // The user now opens the preview explicitly via the 📄 Preview button
+      // attached to the confirmation message.
 
       setMessages((prev) => [...prev, confirmationMessage]);
     } catch (err) {
@@ -1897,14 +1955,8 @@ export const ChatUI: React.FC = () => {
     recognition.start();
   };
 
-  // ============================================================
-  // 🔊 TTS: Urdu + other languages via Google Translate TTS fallback.
-  //    The browser's built-in speechSynthesis often has no Urdu voice
-  //    installed, so we route Urdu (and any language without a
-  //    matching browser voice) through Google's free TTS endpoint.
-  // ============================================================
+  // UPDATED: Robust TTS — auto-detects Urdu text and speaks it in Urdu.
   const toggleSpeakResponse = (messageId: string, text: string, audioUrl?: string) => {
-    // 1. Backend-generated audio URL takes priority.
     if (audioUrl) {
       if (speakingMessageId === messageId) {
         setSpeakingMessageId(null);
@@ -1918,29 +1970,23 @@ export const ChatUI: React.FC = () => {
       return;
     }
 
-    // 2. If this message is currently being spoken, stop it.
+    if (!('speechSynthesis' in window)) {
+      alert('Text-to-Speech is not supported in this browser.');
+      return;
+    }
+
     if (speakingMessageId === messageId) {
-      if ('speechSynthesis' in window) window.speechSynthesis.cancel();
-      if (ttsAudioRef.current) {
-        ttsAudioRef.current.pause();
-        ttsAudioRef.current.currentTime = 0;
-        ttsAudioRef.current = null;
-      }
+      window.speechSynthesis.cancel();
       if (timerRef.current) clearInterval(timerRef.current);
       setSpeakingMessageId(null);
       setAudioProgress(0);
       return;
     }
 
-    // 3. Stop any currently playing audio before starting a new one.
-    if ('speechSynthesis' in window) window.speechSynthesis.cancel();
-    if (ttsAudioRef.current) {
-      ttsAudioRef.current.pause();
-      ttsAudioRef.current = null;
-    }
+    window.speechSynthesis.cancel();
     if (timerRef.current) clearInterval(timerRef.current);
 
-    const cleanText = text.replace(/[*_#`~|]/g, '').replace(/\s+/g, ' ').trim();
+    const cleanText = text.replace(/[*_#`~|]/g, '');
     const wordCount = cleanText.split(/\s+/).length;
     const estimatedSecs = Math.max(Math.round((wordCount / 150) * 60), 3);
     setAudioDuration(estimatedSecs);
@@ -1951,38 +1997,66 @@ export const ChatUI: React.FC = () => {
 
     console.log(`[TTS] Speaking. Text is Urdu: ${textIsUrdu}. Target lang: ${effectiveLang}`);
 
-    // ---- Google Translate TTS (used for Urdu + languages with no browser voice) ----
-    const useGoogleTTS = async () => {
-      try {
-        const googleLangMap: Record<string, string> = {
-          'en-US': 'en',
-          'ur-PK': 'ur',
-          'es-ES': 'es',
-          'fr-FR': 'fr',
-          'de-DE': 'de',
-          'zh-CN': 'zh-CN',
-        };
-        const googleLang = googleLangMap[effectiveLang] || 'en';
+    const pickVoiceAndSpeak = () => {
+      const voices = window.speechSynthesis.getVoices();
+      console.log(`[TTS] Total voices available: ${voices.length}`);
 
-        // Google Translate TTS has a ~200 char limit per request.
-        const chunkSize = 180;
-        const chunks: string[] = [];
-        let remaining = cleanText;
-        while (remaining.length > 0) {
-          if (remaining.length <= chunkSize) {
-            chunks.push(remaining);
-            break;
+      let chosenVoice: SpeechSynthesisVoice | undefined;
+
+      if (textIsUrdu) {
+        chosenVoice = voices.find(
+          (v) =>
+            v.lang.toLowerCase().startsWith('ur') ||
+            v.name.toLowerCase().includes('urdu')
+        );
+
+        if (!chosenVoice) {
+          chosenVoice = voices.find(
+            (v) =>
+              v.lang.toLowerCase().startsWith('hi') ||
+              v.name.toLowerCase().includes('hindi')
+          );
+          if (chosenVoice) {
+            console.warn('[TTS] No Urdu voice found. Falling back to Hindi voice:', chosenVoice.name);
           }
-          let splitAt = remaining.lastIndexOf(' ', chunkSize);
-          if (splitAt === -1) splitAt = chunkSize;
-          chunks.push(remaining.slice(0, splitAt).trim());
-          remaining = remaining.slice(splitAt).trim();
         }
 
-        console.log(`[TTS] Using Google Translate TTS in "${googleLang}" (${chunks.length} chunk(s))`);
+        if (!chosenVoice) {
+          chosenVoice = voices.find(
+            (v) => /ar|fa|ur|hi/i.test(v.lang) || /arabic|persian|urdu|hindi/i.test(v.name)
+          );
+          if (chosenVoice) {
+            console.warn('[TTS] Falling back to:', chosenVoice.name, chosenVoice.lang);
+          }
+        }
 
+        if (!chosenVoice) {
+          console.error('[TTS] ⚠️ No Urdu/Hindi/Arabic/Persian voice installed. Install one via OS settings.');
+        }
+      } else {
+        const langPrefix = effectiveLang.split('-')[0].toLowerCase();
+        chosenVoice = voices.find(
+          (v) =>
+            v.lang.toLowerCase().replace('_', '-') === effectiveLang.toLowerCase() ||
+            v.lang.toLowerCase().startsWith(langPrefix)
+        );
+      }
+
+      const utterance = new SpeechSynthesisUtterance(cleanText);
+      utterance.lang = effectiveLang;
+
+      if (chosenVoice) {
+        utterance.voice = chosenVoice;
+        console.log(`[TTS] ✅ Using voice: "${chosenVoice.name}" (${chosenVoice.lang})`);
+      } else {
+        console.warn(`[TTS] Using default voice (no match for ${effectiveLang}).`);
+      }
+
+      utterance.rate = textIsUrdu ? 0.85 : 0.95;
+      utterance.pitch = 1.0;
+
+      utterance.onstart = () => {
         setSpeakingMessageId(messageId);
-
         timerRef.current = setInterval(() => {
           setAudioProgress((prev) => {
             if (prev >= estimatedSecs) {
@@ -1992,154 +2066,41 @@ export const ChatUI: React.FC = () => {
             return prev + 1;
           });
         }, 1000);
+      };
 
-        for (let i = 0; i < chunks.length; i++) {
-          const chunk = chunks[i];
-          const url = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(
-            chunk
-          )}&tl=${googleLang}&client=tw-ob`;
-
-          const audio = new Audio(url);
-          audio.crossOrigin = 'anonymous';
-          ttsAudioRef.current = audio;
-
-          await new Promise<void>((resolve, reject) => {
-            audio.onended = () => resolve();
-            audio.onerror = (e) => reject(e);
-            audio.play().catch(reject);
-          });
-        }
-
+      utterance.onend = () => {
         if (timerRef.current) clearInterval(timerRef.current);
         setSpeakingMessageId(null);
         setAudioProgress(0);
-        ttsAudioRef.current = null;
-      } catch (err) {
-        console.error('[TTS] Google TTS failed, falling back to browser speechSynthesis:', err);
-        ttsAudioRef.current = null;
-        fallbackToBrowserTTS();
-      }
-    };
-
-    // ---- Browser SpeechSynthesis fallback ----
-    const fallbackToBrowserTTS = () => {
-      if (!('speechSynthesis' in window)) {
-        alert('Text-to-Speech is not supported in this browser.');
-        setSpeakingMessageId(null);
-        if (timerRef.current) clearInterval(timerRef.current);
-        return;
-      }
-
-      const pickVoiceAndSpeak = () => {
-        const voices = window.speechSynthesis.getVoices();
-        let chosenVoice: SpeechSynthesisVoice | undefined;
-
-        if (textIsUrdu) {
-          chosenVoice = voices.find(
-            (v) =>
-              v.lang.toLowerCase().startsWith('ur') ||
-              v.name.toLowerCase().includes('urdu')
-          );
-          if (!chosenVoice) {
-            chosenVoice = voices.find(
-              (v) =>
-                v.lang.toLowerCase().startsWith('hi') ||
-                v.name.toLowerCase().includes('hindi')
-            );
-          }
-          if (!chosenVoice) {
-            chosenVoice = voices.find(
-              (v) => /ar|fa|ur|hi/i.test(v.lang) || /arabic|persian|urdu|hindi/i.test(v.name)
-            );
-          }
-        } else {
-          const langPrefix = effectiveLang.split('-')[0].toLowerCase();
-          chosenVoice = voices.find(
-            (v) =>
-              v.lang.toLowerCase().replace('_', '-') === effectiveLang.toLowerCase() ||
-              v.lang.toLowerCase().startsWith(langPrefix)
-          );
-        }
-
-        const utterance = new SpeechSynthesisUtterance(cleanText);
-        utterance.lang = effectiveLang;
-
-        if (chosenVoice) {
-          utterance.voice = chosenVoice;
-          console.log(`[TTS] Browser fallback using voice: "${chosenVoice.name}" (${chosenVoice.lang})`);
-        } else {
-          console.warn(`[TTS] No matching browser voice for ${effectiveLang}, using default.`);
-        }
-
-        utterance.rate = textIsUrdu ? 0.85 : 0.95;
-        utterance.pitch = 1.0;
-
-        utterance.onstart = () => {
-          setSpeakingMessageId(messageId);
-          timerRef.current = setInterval(() => {
-            setAudioProgress((prev) => {
-              if (prev >= estimatedSecs) {
-                if (timerRef.current) clearInterval(timerRef.current);
-                return estimatedSecs;
-              }
-              return prev + 1;
-            });
-          }, 1000);
-        };
-
-        utterance.onend = () => {
-          if (timerRef.current) clearInterval(timerRef.current);
-          setSpeakingMessageId(null);
-          setAudioProgress(0);
-        };
-
-        utterance.onerror = () => {
-          if (timerRef.current) clearInterval(timerRef.current);
-          setSpeakingMessageId(null);
-          setAudioProgress(0);
-        };
-
-        window.speechSynthesis.speak(utterance);
       };
 
-      const voices = window.speechSynthesis.getVoices();
-      if (voices.length === 0) {
-        const onVoicesReady = () => {
-          window.speechSynthesis.onvoiceschanged = null;
-          pickVoiceAndSpeak();
-        };
-        window.speechSynthesis.onvoiceschanged = onVoicesReady;
-        setTimeout(() => {
-          if (window.speechSynthesis.getVoices().length > 0) {
-            window.speechSynthesis.onvoiceschanged = null;
-            pickVoiceAndSpeak();
-          }
-        }, 500);
-      } else {
-        pickVoiceAndSpeak();
-      }
+      utterance.onerror = (e) => {
+        console.error('[TTS] Speech synthesis error:', e);
+        if (timerRef.current) clearInterval(timerRef.current);
+        setSpeakingMessageId(null);
+        setAudioProgress(0);
+      };
+
+      window.speechSynthesis.speak(utterance);
     };
 
-    // ---- Decision: route to the right TTS engine ----
-    if (textIsUrdu) {
-      // Urdu: always use Google TTS (browser voices rarely exist).
-      void useGoogleTTS();
-    } else {
-      // Non-Urdu: try the browser first if a matching voice exists.
-      const voices = window.speechSynthesis.getVoices();
-      const langPrefix = effectiveLang.split('-')[0].toLowerCase();
-      const hasMatchingVoice = voices.some(
-        (v) =>
-          v.lang.toLowerCase().replace('_', '-') === effectiveLang.toLowerCase() ||
-          v.lang.toLowerCase().startsWith(langPrefix)
-      );
+    const voices = window.speechSynthesis.getVoices();
+    if (voices.length === 0) {
+      console.log('[TTS] Voices not loaded yet. Waiting for voiceschanged event…');
+      const onVoicesReady = () => {
+        window.speechSynthesis.onvoiceschanged = null;
+        pickVoiceAndSpeak();
+      };
+      window.speechSynthesis.onvoiceschanged = onVoicesReady;
 
-      if (hasMatchingVoice) {
-        fallbackToBrowserTTS();
-      } else {
-        console.log(`[TTS] No browser voice for ${effectiveLang}, using Google TTS.`);
-        void useGoogleTTS();
-      }
+      setTimeout(() => {
+        if (window.speechSynthesis.getVoices().length > 0) {
+          window.speechSynthesis.onvoiceschanged = null;
+          pickVoiceAndSpeak();
+        }
+      }, 500);
+    } else {
+      pickVoiceAndSpeak();
     }
   };
 
@@ -2212,11 +2173,18 @@ export const ChatUI: React.FC = () => {
   const getChatBoxStyles = (): React.CSSProperties => {
     const baseStyles: React.CSSProperties = {
       width: '100%',
+      minWidth: 0,
       border: `2px solid ${activeTheme.chatBoxBorder}`,
       borderRadius: '14px',
-      height: '480px',
+      // ⚠️ ADJUSTED CHAT BOX HEIGHT:
+      // Was a fixed 480px. Now uses 60% of the viewport height,
+      // with a sensible minimum so it never collapses on short screens.
+      // Change 60vh to any value you like (e.g., '600px', '70vh', '50vh').
+      height: '500px',
+      minHeight: '480px',
       overflowY: 'auto',
       overflowX: 'hidden',
+      
       padding: '24px',
       boxSizing: 'border-box',
       transition: 'all 0.3s ease',
@@ -2336,6 +2304,8 @@ export const ChatUI: React.FC = () => {
           scrollbar-color: var(--sb-thumb) var(--sb-track);
         }
         
+        /* ⚠️ FIX: tables use width:100% + max-width:100% instead of min-width:100%
+           so they can never force their parent to grow wider than the chat box. */
         .markdown-wrapper table {
           display: table;
           border-collapse: collapse;
@@ -2343,13 +2313,17 @@ export const ChatUI: React.FC = () => {
           font-size: 13.5px;
           background-color: rgba(0, 0, 0, 0.25);
           border-radius: 6px;
-          min-width: 100%;
+          width: 100%;
+          max-width: 100%;
+          table-layout: auto;
         }
         .markdown-wrapper th, .markdown-wrapper td {
           border: 1px solid rgba(255, 255, 255, 0.22);
           padding: 10px 14px;
           text-align: left;
           vertical-align: top;
+          word-break: break-word;
+          overflow-wrap: anywhere;
         }
         .markdown-wrapper th {
           background-color: rgba(255, 255, 255, 0.15);
@@ -2364,10 +2338,16 @@ export const ChatUI: React.FC = () => {
         .markdown-wrapper pre {
           overflow-x: auto;
           max-width: 100%;
+          white-space: pre-wrap;
+          word-break: break-word;
         }
         .markdown-wrapper img {
           max-width: 100%;
           height: auto;
+        }
+        .markdown-wrapper code {
+          word-break: break-word;
+          overflow-wrap: anywhere;
         }
       `}</style>
 
@@ -2751,9 +2731,9 @@ export const ChatUI: React.FC = () => {
           minWidth: 0,
         }}
       >
-        <div style={{ width: '100%', maxWidth: '850px', minWidth: 0 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-            <div style={{ width: '160px' }} />
+        <div style={{ width: '1080px', maxWidth: '100%', minWidth: 0 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', gap: '12px', flexWrap: 'wrap' }}>
+            <div style={{ width: '160px', flexShrink: 0 }} />
             <h2
               style={{
                 color: activeTheme.mainTitle,
@@ -2762,12 +2742,14 @@ export const ChatUI: React.FC = () => {
                 margin: 0,
                 fontWeight: 'bold',
                 fontSize: activeTheme.titleFont ? '28px' : '24px',
+                flex: 1,
+                minWidth: 0,
               }}
             >
               {activeTheme.titleText || 'Universal Voice Bot'}
             </h2>
 
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
               <select
                 value={selectedLanguage}
                 onChange={handleLanguageChange}
@@ -2782,6 +2764,7 @@ export const ChatUI: React.FC = () => {
                   cursor: 'pointer',
                   outline: 'none',
                   boxShadow: '0 2px 6px rgba(0,0,0,0.1)',
+                  maxWidth: '160px',
                 }}
               >
                 {SUPPORTED_LANGUAGES.map((lang) => (
@@ -2793,16 +2776,35 @@ export const ChatUI: React.FC = () => {
             </div>
           </div>
 
-          {/* WRAPPER: chat box + right-side button rail */}
+          {/* ============================================================
+              ⚠️ THE BIG FIX: CHAT BOX + RIGHT-SIDE RAIL
+              ------------------------------------------------------------
+              OLD BUG: the right-side button rail used `position: absolute;
+                       left: 100%` — it escaped the chat area entirely and
+                       pushed off-screen on narrow windows.
+              NEW: we render the rail as a real flex column NEXT TO the
+                   chat box, inside a flex row with `minWidth: 0` on the
+                   chat box. The rail can never overlap or leave the box.
+             ============================================================ */}
           <div
             style={{
-              position: 'relative',
+              display: 'flex',
+              gap: '14px',
               marginBottom: '18px',
+              width: '100%',
+              minWidth: 0,
+              alignItems: 'flex-start',
             }}
           >
+            {/* CHAT BOX */}
             <div
               className="markdown-wrapper"
-              style={getChatBoxStyles()}
+              style={{
+                ...getChatBoxStyles(),
+                flex: '1 1 auto',
+                minWidth: 0,
+                maxWidth: '100%',
+              }}
             >
               {isMonsoonDark && <FrostedRainOverlay />}
 
@@ -2813,7 +2815,16 @@ export const ChatUI: React.FC = () => {
                   </p>
                 ) : (
                   messages.map((msg) => (
-                    <div key={msg.id} style={{ textAlign: msg.sender === 'user' ? 'right' : 'left', margin: '14px 0' }}>
+                    <div
+                      key={msg.id}
+                      style={{
+                        textAlign: msg.sender === 'user' ? 'right' : 'left',
+                        margin: '14px 0',
+                        minWidth: 0,
+                        maxWidth: '100%',
+                        overflowWrap: 'anywhere',
+                      }}
+                    >
                       <div
                         style={{
                           display: 'inline-block',
@@ -2837,19 +2848,25 @@ export const ChatUI: React.FC = () => {
                             remarkPlugins={[remarkGfm]}
                             components={{
                               table: ({ children }) => (
-                                <div style={{
-                                  overflowX: 'auto',
-                                  maxWidth: '100%',
-                                  margin: '16px 0',
-                                  borderRadius: '6px',
-                                  border: '1px solid rgba(255,255,255,0.15)',
-                                }}>
-                                  <table style={{
-                                    borderCollapse: 'collapse',
-                                    minWidth: '100%',
-                                    fontSize: '13.5px',
-                                    background: 'rgba(0,0,0,0.2)',
-                                  }}>
+                                <div
+                                  style={{
+                                    overflowX: 'auto',
+                                    maxWidth: '100%',
+                                    margin: '16px 0',
+                                    borderRadius: '6px',
+                                    border: '1px solid rgba(255,255,255,0.15)',
+                                  }}
+                                >
+                                  <table
+                                    style={{
+                                      borderCollapse: 'collapse',
+                                      width: '100%',
+                                      maxWidth: '100%',
+                                      fontSize: '13.5px',
+                                      background: 'rgba(0,0,0,0.2)',
+                                      tableLayout: 'auto',
+                                    }}
+                                  >
                                     {children}
                                   </table>
                                 </div>
@@ -2949,17 +2966,15 @@ export const ChatUI: React.FC = () => {
               </div>
             </div>
 
-            {/* RIGHT-SIDE BUTTON RAIL */}
+            {/* ⚠️ RIGHT-SIDE BUTTON RAIL — now a real flex column, not `left:100%` absolute */}
             <div
               style={{
-                position: 'absolute',
-                top: '10px',
-                left: '100%',
-                marginLeft: '14px',
                 display: 'flex',
                 flexDirection: 'column',
                 gap: '10px',
-                minWidth: '180px',
+                width: '180px',
+                flexShrink: 0,
+                paddingTop: '10px',
               }}
             >
               <button
@@ -2974,7 +2989,8 @@ export const ChatUI: React.FC = () => {
                   fontWeight: 'bold',
                   cursor: isUploading ? 'not-allowed' : 'pointer',
                   fontSize: '12.5px',
-                  whiteSpace: 'nowrap',
+                  whiteSpace: 'normal',
+                  wordBreak: 'break-word',
                   boxShadow: '0 3px 10px rgba(0,0,0,0.15)',
                 }}
               >
@@ -2992,7 +3008,8 @@ export const ChatUI: React.FC = () => {
                   fontWeight: 'bold',
                   cursor: 'pointer',
                   fontSize: '12.5px',
-                  whiteSpace: 'nowrap',
+                  whiteSpace: 'normal',
+                  wordBreak: 'break-word',
                   boxShadow: '0 3px 10px rgba(0,0,0,0.15)',
                 }}
               >
@@ -3002,7 +3019,7 @@ export const ChatUI: React.FC = () => {
           </div>
 
           {/* Input Controls */}
-          <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', gap: '10px', alignItems: 'stretch', flexWrap: 'nowrap', minWidth: 0 }}>
             <input type="file" ref={fileInputRef} onChange={handleFileUpload} style={{ display: 'none' }} accept=".pdf,.txt,.md,.doc,.docx,image/*" />
 
             <button
@@ -3017,6 +3034,8 @@ export const ChatUI: React.FC = () => {
                 fontWeight: 'bold',
                 cursor: isUploading ? 'not-allowed' : 'pointer',
                 fontSize: '13px',
+                flexShrink: 0,
+                whiteSpace: 'nowrap',
               }}
             >
               {isUploading ? '⏳ Uploading...' : '📄 Upload Doc'}
@@ -3034,6 +3053,8 @@ export const ChatUI: React.FC = () => {
                 fontWeight: 'bold',
                 cursor: 'pointer',
                 fontSize: '13px',
+                flexShrink: 0,
+                whiteSpace: 'nowrap',
               }}
             >
               {isListening ? '🎙 Stop' : '🎤 Dictate'}
@@ -3047,7 +3068,7 @@ export const ChatUI: React.FC = () => {
               placeholder="Speak or type your question..."
               style={{
                 flex: 1,
-                minWidth: '200px',
+                minWidth: 0,
                 padding: '12px 16px',
                 borderRadius: '8px',
                 border: `2px solid ${activeTheme.chatBoxBorder}`,
@@ -3069,6 +3090,8 @@ export const ChatUI: React.FC = () => {
                 color: activeTheme.sendBtnText,
                 fontWeight: 'bold',
                 cursor: isLoading || !input.trim() ? 'not-allowed' : 'pointer',
+                flexShrink: 0,
+                whiteSpace: 'nowrap',
               }}
             >
               Send 🚀
@@ -3082,29 +3105,32 @@ export const ChatUI: React.FC = () => {
         previewData.fileName.toLowerCase().endsWith('.pdf') &&
         Array.isArray(previewData.blocks) &&
         previewData.blocks.length > 0 ? (
-          <PdfComparator
-            fileUrl={previewData.fileUrl}
-            fileName={previewData.fileName}
-            blocks={previewData.blocks}
-            pageDimensions={previewData.pageDimensions}
-            colors={{
-              chatBoxBg: activeTheme.chatBoxBg,
-              chatBoxBorder: activeTheme.chatBoxBorder,
-              sidebarBorder: activeTheme.sidebarBorder,
-              sidebarTitle: activeTheme.sidebarTitle,
-              sidebarText: activeTheme.sidebarText,
-              mainTitle: activeTheme.mainTitle,
-              assistantBubbleBg: activeTheme.assistantBubbleBg,
-              newChatBtn: activeTheme.newChatBtn,
-              newChatBtnText: activeTheme.newChatBtnText,
-            }}
-            onClose={() => setShowPreviewModal(false)}
-          />
+          <PdfErrorBoundary onClose={() => setShowPreviewModal(false)}>
+            <PdfComparator
+              fileUrl={previewData.fileUrl}
+              fileName={previewData.fileName}
+              blocks={previewData.blocks}
+              pageDimensions={previewData.pageDimensions}
+              colors={{
+                chatBoxBg: activeTheme.chatBoxBg,
+                chatBoxBorder: activeTheme.chatBoxBorder,
+                sidebarBorder: activeTheme.sidebarBorder,
+                sidebarTitle: activeTheme.sidebarTitle,
+                sidebarText: activeTheme.sidebarText,
+                mainTitle: activeTheme.mainTitle,
+                assistantBubbleBg: activeTheme.assistantBubbleBg,
+                newChatBtn: activeTheme.newChatBtn,
+                newChatBtnText: activeTheme.newChatBtnText,
+              }}
+              onClose={() => setShowPreviewModal(false)}
+            />
+          </PdfErrorBoundary>
         ) : (
           <div style={{
             position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh',
             backgroundColor: 'rgba(0, 0, 0, 0.85)', backdropFilter: 'blur(6px)',
             display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 9999,
+            padding: '16px', boxSizing: 'border-box',
           }}>
             <div style={{
               width: '95%', maxWidth: '1400px', height: '90vh',
@@ -3113,6 +3139,7 @@ export const ChatUI: React.FC = () => {
               borderRadius: '16px', padding: '20px',
               display: 'flex', flexDirection: 'column',
               boxShadow: '0 10px 30px rgba(0,0,0,0.5)',
+              minWidth: 0,
             }}>
               <div style={{
                 display: 'flex', justifyContent: 'space-between', alignItems: 'center',
@@ -3137,10 +3164,17 @@ export const ChatUI: React.FC = () => {
                 borderRadius: '10px', padding: '18px',
                 border: `1px solid ${activeTheme.sidebarBorder}`,
                 color: activeTheme.assistantBubbleText,
+                minWidth: 0,
               }}>
-                <pre style={{ whiteSpace: 'pre-wrap', fontSize: '13px', margin: 0, fontFamily: 'inherit' }}>
-                  {previewData.fullExtractedText || '(no markdown available)'}
-                </pre>
+                {previewData.fullExtractedText && previewData.fullExtractedText.trim().length > 0 ? (
+                  <pre style={{ whiteSpace: 'pre-wrap', fontSize: '13px', margin: 0, fontFamily: 'inherit', wordBreak: 'break-word' }}>
+                    {previewData.fullExtractedText}
+                  </pre>
+                ) : (
+                  <p style={{ opacity: 0.7, fontStyle: 'italic' }}>
+                    This document has no extractable text (it may be a scanned image or an empty file).
+                  </p>
+                )}
               </div>
             </div>
           </div>
@@ -3149,15 +3183,15 @@ export const ChatUI: React.FC = () => {
 
       {/* CHUNK INSPECTOR MODAL */}
       {showChunkModal && (
-        <div style={{ position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', backgroundColor: 'rgba(0, 0, 0, 0.65)', backdropFilter: 'blur(4px)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 999 }}>
-          <div style={{ width: '90%', maxWidth: '850px', maxHeight: '85vh', backgroundColor: activeTheme.chatBoxBg, border: `2px solid ${activeTheme.chatBoxBorder}`, borderRadius: '16px', padding: '24px', display: 'flex', flexDirection: 'column' }}>
+        <div style={{ position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', backgroundColor: 'rgba(0, 0, 0, 0.65)', backdropFilter: 'blur(4px)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 999, padding: '16px', boxSizing: 'border-box' }}>
+          <div style={{ width: '90%', maxWidth: '850px', maxHeight: '85vh', backgroundColor: activeTheme.chatBoxBg, border: `2px solid ${activeTheme.chatBoxBorder}`, borderRadius: '16px', padding: '24px', display: 'flex', flexDirection: 'column', minWidth: 0 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', gap: '12px', flexWrap: 'wrap' }}>
               <h3 style={{ margin: 0, color: activeTheme.mainTitle }}>🧩 Document Chunks Inspector</h3>
               <button onClick={() => setShowChunkModal(false)} style={{ backgroundColor: 'transparent', border: 'none', color: activeTheme.mainTitle, fontSize: '20px', fontWeight: 'bold', cursor: 'pointer' }}>✖</button>
             </div>
 
             {documents.length > 0 && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px', paddingBottom: '12px', borderBottom: `1px solid ${activeTheme.sidebarBorder}` }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px', paddingBottom: '12px', borderBottom: `1px solid ${activeTheme.sidebarBorder}`, flexWrap: 'wrap' }}>
                 <label style={{ fontSize: '12px', fontWeight: 'bold', color: activeTheme.sidebarTitle, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
                   Document:
                 </label>
@@ -3166,6 +3200,7 @@ export const ChatUI: React.FC = () => {
                   onChange={handleChunkDocChange}
                   style={{
                     flex: 1,
+                    minWidth: '150px',
                     padding: '8px 10px',
                     borderRadius: '8px',
                     border: `1px solid ${activeTheme.chatBoxBorder}`,
@@ -3190,19 +3225,19 @@ export const ChatUI: React.FC = () => {
               </div>
             )}
 
-            <div style={{ flex: 1, overflowY: 'auto' }}>
+            <div style={{ flex: 1, overflowY: 'auto', minWidth: 0 }}>
               {isFetchingChunks ? (
                 <p style={{ color: activeTheme.sidebarTitle, textAlign: 'center' }}>Loading document chunks... ⏳</p>
               ) : chunks.length === 0 ? (
                 <p style={{ color: activeTheme.sidebarTitle, textAlign: 'center' }}>No document chunks found! 📄</p>
               ) : (
                 chunks.map((chunk) => (
-                  <div key={`${chunk.documentId}-${chunk.id}-${chunk.chunkIndex}`} style={{ border: `1px solid ${activeTheme.sidebarBorder}`, backgroundColor: activeTheme.assistantBubbleBg, borderRadius: '10px', padding: '14px', marginBottom: '12px' }}>
+                  <div key={`${chunk.documentId}-${chunk.id}-${chunk.chunkIndex}`} style={{ border: `1px solid ${activeTheme.sidebarBorder}`, backgroundColor: activeTheme.assistantBubbleBg, borderRadius: '10px', padding: '14px', marginBottom: '12px', minWidth: 0 }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', fontWeight: 'bold', color: activeTheme.sidebarTitle, marginBottom: '8px' }}>
                       <span>Chunk #{chunk.chunkIndex + 1}</span>
                       <span>Doc ID: {chunk.documentId}</span>
                     </div>
-                    <pre style={{ margin: 0, whiteSpace: 'pre-wrap', fontSize: '13px', color: activeTheme.assistantBubbleText }}>{chunk.content}</pre>
+                    <pre style={{ margin: 0, whiteSpace: 'pre-wrap', fontSize: '13px', color: activeTheme.assistantBubbleText, wordBreak: 'break-word' }}>{chunk.content}</pre>
                   </div>
                 ))
               )}
