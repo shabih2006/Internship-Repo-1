@@ -28,7 +28,7 @@ A full-stack academic AI assistant with document understanding (RAG), conversati
 
 The system has five main features:
 
-1. **Document Hub** — Upload PDFs, DOCX, Markdown, or images. The backend extracts text, structure, and layout-aware bounding boxes, generates vector embeddings, and prepares them for AI queries.
+1. **Document Hub** — Upload PDFs. The backend extracts text, structure, and layout-aware bounding boxes, generates vector embeddings, and prepares them for AI queries.
 2. **General AI Chat** — A conversational assistant for coursework, coding, and general questions. Not restricted to uploaded documents.
 3. **RAG & Voice Chat** — Ask questions about your uploaded documents via text or voice. The AI retrieves semantically similar chunks and answers using them as grounding context.
 4. **Text-to-Speech (TTS)** — Every assistant answer can be read aloud. Automatically detects Urdu/Arabic script and picks the correct voice.
