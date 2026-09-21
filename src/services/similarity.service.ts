@@ -1,3 +1,4 @@
+// src/services/similarity.service.ts
 import { PrismaClient } from '@prisma/client';
 import { embeddingService } from './embedding.service';
 
@@ -34,6 +35,13 @@ function cosineSimilarity(vecA: number[], vecB: number[]): number {
 }
 
 export class SimilarityService {
+  /**
+   * Find top-K similar chunks.
+   * @param question   - the user's query
+   * @param limit      - max results
+   * @param documentId - if provided, restrict search to this document only.
+   *                     If null/undefined, search across ALL documents.
+   */
   async findSimilarChunks(
     question: string,
     limit: number = 5,
@@ -46,6 +54,10 @@ export class SimilarityService {
         documentId && !isNaN(documentId) && documentId > 0
           ? { documentId: Number(documentId) }
           : {};
+
+      console.log(
+        `[Similarity] Searching ${documentId ? `doc #${documentId}` : 'ALL docs'} (top ${limit})`
+      );
 
       const allDbChunks = (await prisma.documentChunk.findMany({
         where: whereClause,
