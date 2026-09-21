@@ -28,11 +28,35 @@ A full-stack academic AI assistant with document understanding (RAG), conversati
 
 The system has five main features:
 
-1. **Document Hub** — Upload PDFs. The backend extracts text, structure, and layout-aware bounding boxes, generates vector embeddings, and prepares them for AI queries.
-2. **General AI Chat** — A conversational assistant for coursework, coding, and general questions. Not restricted to uploaded documents.
-3. **RAG & Voice Chat** — Ask questions about your uploaded documents via text or voice. The AI retrieves semantically similar chunks and answers using them as grounding context.
-4. **Text-to-Speech (TTS)** — Every assistant answer can be read aloud. Automatically detects Urdu/Arabic script and picks the correct voice.
-5. **Visual Inspector** — A side-by-side view of a PDF and its extracted structured blocks. Hover over a block to highlight it in the document.
+### 1. Document Hub
+
+![Document Preview](docs/screenshots/doc-preview.png)
+
+Upload PDFs. The backend extracts text, structure, and layout-aware bounding boxes, generates vector embeddings, and prepares them for AI queries.
+
+### 2. General AI Chat
+
+![AI Chat Interface](docs/screenshots/ai-chat-interface.png)
+
+A conversational assistant for coursework, coding, and general questions. Not restricted to uploaded documents.
+
+### 3. RAG & Voice Chat
+
+![Simple Sample Question](docs/screenshots/simple-sample-question.png)
+
+Ask questions about your uploaded documents via text or voice. The AI retrieves semantically similar chunks and answers using them as grounding context.
+
+### 4. Text-to-Speech (TTS)
+
+![Text to Voice](docs/screenshots/text-to-voice.png)
+
+Every assistant answer can be read aloud. Automatically detects Urdu/Arabic script and picks the correct voice.
+
+### 5. Visual Inspector
+
+![Document Preview](docs/screenshots/doc-preview.png)
+
+A side-by-side view of a PDF and its extracted structured blocks. Hover over a block to highlight it in the document.
 
 ---
 
