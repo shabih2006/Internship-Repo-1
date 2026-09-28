@@ -1,6 +1,5 @@
-// src/services/similarity.service.ts
-import { PrismaClient } from '@prisma/client';
-import { embeddingService } from './embedding.service';
+import { PrismaClient } from "@prisma/client";
+import { embeddingService } from "./embedding.service";
 
 const prisma = new PrismaClient();
 
@@ -35,17 +34,10 @@ function cosineSimilarity(vecA: number[], vecB: number[]): number {
 }
 
 export class SimilarityService {
-  /**
-   * Find top-K similar chunks.
-   * @param question   - the user's query
-   * @param limit      - max results
-   * @param documentId - if provided, restrict search to this document only.
-   *                     If null/undefined, search across ALL documents.
-   */
   async findSimilarChunks(
     question: string,
     limit: number = 5,
-    documentId?: number
+    documentId?: number,
   ): Promise<SimilarChunk[]> {
     const queryEmbedding = await embeddingService.generateEmbedding(question);
 
@@ -54,10 +46,6 @@ export class SimilarityService {
         documentId && !isNaN(documentId) && documentId > 0
           ? { documentId: Number(documentId) }
           : {};
-
-      console.log(
-        `[Similarity] Searching ${documentId ? `doc #${documentId}` : 'ALL docs'} (top ${limit})`
-      );
 
       const allDbChunks = (await prisma.documentChunk.findMany({
         where: whereClause,
@@ -68,7 +56,7 @@ export class SimilarityService {
         let emb: number[] = [];
         if (Array.isArray(c.embedding)) {
           emb = c.embedding as number[];
-        } else if (typeof c.embedding === 'string') {
+        } else if (typeof c.embedding === "string") {
           try {
             emb = JSON.parse(c.embedding);
           } catch {
@@ -80,7 +68,7 @@ export class SimilarityService {
           id: Number(c.id || 0),
           documentId: Number(c.documentId || 1),
           chunkIndex: Number(c.chunkIndex || 0),
-          content: String(c.content || ''),
+          content: String(c.content || ""),
           similarityScore:
             emb.length > 0 ? cosineSimilarity(queryEmbedding, emb) : 0,
         };
@@ -89,7 +77,7 @@ export class SimilarityService {
       scored.sort((a, b) => b.similarityScore - a.similarityScore);
       return scored.slice(0, limit);
     } catch (err) {
-      console.error('Similarity search failed:', err);
+      console.error("Similarity search failed:", err);
       return [];
     }
   }
